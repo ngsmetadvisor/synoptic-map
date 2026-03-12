@@ -3,11 +3,11 @@ name: Update Data
 on:
   workflow_dispatch:
   schedule:
-    - cron: '45 0 * * *'
-    - cron: '45 12 * * *'
+    - cron: '45 0 * * *'   # 00:45 UTC
+    - cron: '45 12 * * *'  # 12:45 UTC
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # <--- force Node 24
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # force Node.js 24
 
 jobs:
   update:
