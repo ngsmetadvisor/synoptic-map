@@ -1,0 +1,45 @@
+name: Update Synoptic Map
+
+on:
+  schedule:
+    - cron: '0 0,6,12,18 * * *'   # runs at 00Z, 06Z, 12Z, 18Z
+  workflow_dispatch:                # also allows manual trigger
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run update script
+        run: python update_data.py
+
+      - name: Commit and push updated data
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name  "GitHub Actions"
+          git add *.json
+          git diff --cached --quiet || git commit -m "Auto-update $(date -u '+%Y-%m-%d %HZ')"
+          git push
+```
+
+---
+
+**Step 2 — `requirements.txt`**
+```
+requests
+numpy
+pandas
+folium
+matplotlib
+metpy
+scipy
+pillow
