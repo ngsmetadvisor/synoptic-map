@@ -31,9 +31,9 @@ jobs:
       - name: Run update_data.py
         run: python update_data.py
 
-      # Step 5: Upload output JSON files as artifacts
+      # Step 5: Upload output JSON files as artifacts (v4)
       - name: Upload output files
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: data-outputs
           path: |
