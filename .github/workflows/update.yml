@@ -1,37 +1,35 @@
 name: Update Data
 
 on:
-  workflow_dispatch:      # manual trigger
+  workflow_dispatch:
   schedule:
-    - cron: '45 0 * * *'   # daily at 00:45 UTC
-    - cron: '45 12 * * *'  # daily at 12:45 UTC
+    - cron: '45 0 * * *'
+    - cron: '45 12 * * *'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # <--- force Node 24
 
 jobs:
   update:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout repo
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      # Step 2: Set up Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
-      # Step 3: Install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # Step 4: Run update script
       - name: Run update_data.py
         run: python update_data.py
 
-      # Step 5: Upload output JSON files as artifacts (v4)
       - name: Upload output files
         uses: actions/upload-artifact@v4
         with:
