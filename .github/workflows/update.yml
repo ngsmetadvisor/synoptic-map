@@ -29,17 +29,3 @@ jobs:
           git add *.json
           git diff --cached --quiet || git commit -m "Auto-update $(date -u '+%Y-%m-%d %HZ')"
           git push
-```
-
----
-
-**Step 2 — `requirements.txt`**
-```
-requests
-numpy
-pandas
-folium
-matplotlib
-metpy
-scipy
-pillow
