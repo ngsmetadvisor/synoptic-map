@@ -1,4 +1,9 @@
-name: Update Synoptic Map Data
+- name: Show action versions
+        run: |
+          echo "checkout and setup-python versions are baked into the runner"
+          cat $GITHUB_WORKSPACE/../_actions/actions/checkout/*/action.yml | grep -m1 "using:"
+          
+          name: Update Synoptic Map Data
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
