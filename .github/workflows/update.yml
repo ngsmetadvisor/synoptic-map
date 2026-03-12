@@ -1,31 +1,1398 @@
-name: Update Synoptic Map
+#!/usr/bin/env python3
+"""
+Synoptic map data updater — runs on GitHub Actions schedule.
+Fetches METAR, upper-air, computes contours, and writes JSON files.
+"""
 
-on:
-  schedule:
-    - cron: '0 0,6,12,18 * * *'   # runs at 00Z, 06Z, 12Z, 18Z
-  workflow_dispatch:                # also allows manual trigger
+import csv, io, re, json, math, time, concurrent.futures, warnings
+import requests
+import numpy as np
+import pandas as pd
+from datetime import datetime, timezone, timedelta, date
+from urllib.parse import quote
+from scipy.interpolate import RBFInterpolator
+from scipy.ndimage import (gaussian_filter, maximum_filter,
+                            minimum_filter, label)
+from scipy.signal import find_peaks
+from scipy.spatial import cKDTree
+import matplotlib
+matplotlib.use('Agg')
+from matplotlib import pyplot as plt
+warnings.filterwarnings('ignore')
 
-jobs:
-  update:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
+# ══════════════════════════════════════════════════════════════════════════
+#  CONFIG
+# ══════════════════════════════════════════════════════════════════════════
+CSV_URL       = 'https://www.orangecore.net/metar/stations.csv'
+COVERAGE      = 'chart'
+METAR_API     = 'https://aviationweather.gov/api/data/metar'
+WYOMING_BASE  = 'https://weather.uwyo.edu/wsgi/sounding'
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
+INTERP_METHOD    = 'rbf'
+GRID_N           = 220
+RBF_SMOOTHING    = 0.3
+SIGMA_SMOOTH     = 3.0
+TMP_RBF_SMOOTHING = 0.05
+TMP_SIGMA        = 1.0
+TTD_RBF_SMOOTHING = 0.10
+TTD_SIGMA        = 1.0
+SLP_INTERVAL     = 4.0
+HL_NEIGHBORHOOD  = 20
+HL_MIN_DELTA     = 2.0
+HL_SIGMA         = 2.0
+sigmaT700500     = 1.5
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+M5_SIGMA      = 2.0
+M5_PROMINENCE = 0.5
+M5_WIDTH      = 2
+M5_MAX_PEAKS  = 4
+M5_MAX_DIST   = 4.0
+M5_MIN_PTS    = 4
 
-      - name: Run update script
-        run: python update_data.py
+CONV_THRESHOLD   = -1e-5
+CONV_GRID_N      = 200
+CONV_RBF_SMOOTH  = 0.4
+CONV_SIGMA       = 3.0
 
-      - name: Commit and push updated data
-        run: |
-          git config user.email "actions@github.com"
-          git config user.name  "GitHub Actions"
-          git add *.json
-          git diff --cached --quiet || git commit -m "Auto-update $(date -u '+%Y-%m-%d %HZ')"
-          git push
+UA_HOURS   = [0, 12]
+UA_WORKERS = 12
+UA_TIMEOUT = 12
+
+STANDARD_LEVELS = [850, 700, 500, 250]
+LEVEL_TOL       = 25
+UA_CONTOUR_LEVELS = [850, 700, 500, 250]
+UA_HGHT_LEVELS = {
+    850: np.arange(1140, 1650, 30),
+    700: np.arange(2520, 3180, 60),
+    500: np.arange(4800, 6000, 60),
+    250: None,
+}
+_INTERVALS = {'HGHT': 6.0, 'TEMP': 2.0, 'TTDP': 2.0, 'SPED': 5.0}
+
+UPPER_AIR_STATIONS = [
+    {'id':'CYLT', 'name':'Alert',                 'lat':82.50, 'lon':-62.33,  'wmo':'71082'},
+    {'id':'CYEU', 'name':'Eureka',                'lat':79.98, 'lon':-85.93,  'wmo':'71917'},
+    {'id':'YRB',  'name':'Resolute Bay',           'lat':74.72, 'lon':-94.98,  'wmo':'71924'},
+    {'id':'YCB',  'name':'Clyde River',            'lat':70.49, 'lon':-68.52,  'wmo':'71925'},
+    {'id':'CYFB', 'name':'Iqaluit',                'lat':63.75, 'lon':-68.53,  'wmo':'71909'},
+    {'id':'YBK',  'name':'Baker Lake',             'lat':64.30, 'lon':-96.00,  'wmo':'71926'},
+    {'id':'CYRK', 'name':'Rankin Inlet',           'lat':62.82, 'lon':-92.12,  'wmo':'71907'},
+    {'id':'CYVP', 'name':'Kuujjuaq',               'lat':58.10, 'lon':-68.42,  'wmo':'71906'},
+    {'id':'CYCO', 'name':'Coral Harbour',          'lat':64.19, 'lon':-83.36,  'wmo':'71815'},
+    {'id':'WSE',  'name':'Goose Bay',              'lat':53.32, 'lon':-60.42,  'wmo':'71816'},
+    {'id':'CYYT', 'name':"St. John's",             'lat':47.62, 'lon':-52.74,  'wmo':'71801'},
+    {'id':'CYSJ', 'name':'Sable Island',           'lat':43.93, 'lon':-60.02,  'wmo':'71600'},
+    {'id':'CYHZ', 'name':'Yarmouth',               'lat':43.83, 'lon':-66.08,  'wmo':'71603'},
+    {'id':'CYBG', 'name':'Bagotville',             'lat':48.33, 'lon':-70.99,  'wmo':'71722'},
+    {'id':'CYYY', 'name':'Mont Joli',              'lat':48.60, 'lon':-68.22,  'wmo':'71714'},
+    {'id':'CYBR', 'name':'Brandon',                'lat':49.91, 'lon':-99.95,  'wmo':'71869'},
+    {'id':'CYLA', 'name':'La Grande IV',           'lat':53.75, 'lon':-73.67,  'wmo':'71823'},
+    {'id':'CYMO', 'name':'Moosonee',               'lat':51.29, 'lon':-80.60,  'wmo':'71836'},
+    {'id':'CYTL', 'name':'Big Trout Lake',         'lat':53.82, 'lon':-89.87,  'wmo':'71845'},
+    {'id':'CYYU', 'name':'Kapuskasing',            'lat':49.41, 'lon':-82.47,  'wmo':'71731'},
+    {'id':'YYQ',  'name':'Churchill',              'lat':58.75, 'lon':-94.07,  'wmo':'71913'},
+    {'id':'YQD',  'name':'The Pas',                'lat':53.97, 'lon':-101.10, 'wmo':'71867'},
+    {'id':'CYXE', 'name':'Saskatoon',              'lat':52.17, 'lon':-106.68, 'wmo':'71866'},
+    {'id':'XEG',  'name':'Edmonton Stony Plain',   'lat':53.55, 'lon':-114.11, 'wmo':'71119'},
+    {'id':'YSM',  'name':'Fort Smith',             'lat':60.02, 'lon':-111.96, 'wmo':'71934'},
+    {'id':'YVQ',  'name':'Norman Wells',           'lat':65.28, 'lon':-126.80, 'wmo':'71043'},
+    {'id':'YXY',  'name':'Whitehorse',             'lat':60.72, 'lon':-135.07, 'wmo':'71964'},
+    {'id':'YYE',  'name':'Fort Nelson',            'lat':58.84, 'lon':-122.60, 'wmo':'71945'},
+    {'id':'YEV',  'name':'Inuvik',                 'lat':68.30, 'lon':-133.48, 'wmo':'71957'},
+    {'id':'ZXS',  'name':'Prince George',          'lat':53.88, 'lon':-122.68, 'wmo':'71908'},
+    {'id':'YZT',  'name':'Port Hardy',             'lat':50.68, 'lon':-127.37, 'wmo':'71109'},
+    {'id':'BRW',  'name':'Utqiagvik (Barrow)',     'lat':71.30, 'lon':-156.78, 'wmo':'70026'},
+    {'id':'OTZ',  'name':'Kotzebue',               'lat':66.87, 'lon':-162.63, 'wmo':'70133'},
+    {'id':'OME',  'name':'Nome',                   'lat':64.50, 'lon':-165.43, 'wmo':'70200'},
+    {'id':'BET',  'name':'Bethel',                 'lat':60.78, 'lon':-161.80, 'wmo':'70219'},
+    {'id':'MCG',  'name':'McGrath',                'lat':62.97, 'lon':-155.62, 'wmo':'70231'},
+    {'id':'FAI',  'name':'Fairbanks',              'lat':64.82, 'lon':-147.87, 'wmo':'70261'},
+    {'id':'ANC',  'name':'Anchorage',              'lat':61.17, 'lon':-150.02, 'wmo':'70273'},
+    {'id':'AKN',  'name':'King Salmon',            'lat':58.68, 'lon':-156.65, 'wmo':'70326'},
+    {'id':'PACD', 'name':'Cold Bay',               'lat':55.20, 'lon':-162.73, 'wmo':'70316'},
+    {'id':'PADQ', 'name':'Kodiak',                 'lat':57.75, 'lon':-152.50, 'wmo':'70350'},
+    {'id':'YAK',  'name':'Yakutat',                'lat':59.52, 'lon':-139.67, 'wmo':'70361'},
+    {'id':'UIL',  'name':'Quillayute WA',          'lat':47.95, 'lon':-124.55, 'wmo':'72797'},
+    {'id':'SLC',  'name':'Salt Lake City UT',      'lat':40.77, 'lon':-111.97, 'wmo':'72572'},
+    {'id':'BOI',  'name':'Boise ID',               'lat':43.57, 'lon':-116.22, 'wmo':'72681'},
+    {'id':'GGW',  'name':'Glasgow MT',             'lat':48.21, 'lon':-106.62, 'wmo':'72768'},
+    {'id':'RIW',  'name':'Riverton WY',            'lat':43.07, 'lon':-108.48, 'wmo':'72672'},
+    {'id':'BIS',  'name':'Bismarck ND',            'lat':46.77, 'lon':-100.75, 'wmo':'72764'},
+    {'id':'ABR',  'name':'Aberdeen SD',            'lat':45.45, 'lon':-98.42,  'wmo':'72659'},
+    {'id':'RAP',  'name':'Rapid City SD',          'lat':44.07, 'lon':-103.22, 'wmo':'72662'},
+    {'id':'INL',  'name':'International Falls MN', 'lat':48.57, 'lon':-93.38,  'wmo':'72747'},
+    {'id':'MPX',  'name':'Minneapolis MN',         'lat':44.85, 'lon':-93.57,  'wmo':'72649'},
+    {'id':'LBF',  'name':'North Platte NE',        'lat':41.13, 'lon':-100.68, 'wmo':'72562'},
+    {'id':'FAR',  'name':'Fargo ND',               'lat':46.90, 'lon':-96.81,  'wmo':'72753'},
+]
+
+# ══════════════════════════════════════════════════════════════════════════
+#  TEMPERATURE BAND TABLES
+# ══════════════════════════════════════════════════════════════════════════
+_NORMALS_850 = [
+    ( 1,  1,  -6,  -8), ( 1,  4,  -8, -10), ( 1, 15,  -6,  -8),
+    ( 1, 18,  -4,  -6), ( 1, 24,  -6,  -8), ( 1, 31,  -8, -10),
+    ( 2,  4,  -6,  -8), ( 3,  9,  -4,  -6), ( 3, 12,  -2,  -4),
+    ( 4,  3,   0,  -2), ( 4,  5,   2,   0), ( 4,  8,   4,   2),
+    ( 5,  2,   6,   4), ( 5, 11,   8,   6), ( 5, 23,  10,   8),
+    ( 6,  1,  12,  10), ( 6, 27,  14,  12), ( 8, 24,  12,  10),
+    ( 9,  5,  10,   8), ( 9, 17,   8,   6), (10,  1,   6,   4),
+    (10, 11,   4,   2), (10, 25,   2,   0), (10, 29,   0,  -2),
+    (11,  8,  -2,  -4), (11, 12,   0,  -2), (11, 17,  -2,  -4),
+    (11, 26,  -4,  -6), (12,  2,  -6,  -8),
+]
+_NORMALS_500 = [
+    ( 1,  1, -28, -30), ( 1, 15, -26, -28), ( 1, 24, -28, -30),
+    ( 2, 23, -30, -32), ( 2, 27, -28, -30), ( 3,  9, -26, -28),
+    ( 3, 12, -28, -30), ( 4,  5, -26, -28), ( 4, 19, -24, -26),
+    ( 4, 27, -22, -24), ( 5, 11, -20, -22), ( 5, 23, -18, -20),
+    ( 6, 13, -16, -18), ( 6, 27, -14, -16), ( 8,  4, -12, -14),
+    ( 8, 11, -14, -16), ( 8, 31, -16, -18), ( 9, 17, -18, -20),
+    (10,  3, -20, -22), (10, 21, -22, -24), (10, 29, -24, -26),
+    (11, 17, -26, -28), (12,  2, -28, -30),
+]
+_UA_TEMP_BANDS_BASE = [
+    ( 999,  16, '#ffffff'), ( 16,  14, '#8b4513'), ( 14,  12, '#ffffff'),
+    ( 12,  10, '#ffc0cb'),  ( 10,   8, '#ffffff'), (  8,   6, '#e35335'),
+    (  6,   4, '#ffffff'),  (  4,   2, '#ff8c00'), (  2,   0, '#ffffff'),
+    (  0,  -2, '#ffff00'),  ( -2,  -4, '#ffffff'), ( -4,  -6, '#00cc00'),
+    ( -6,  -8, '#ffffff'),  ( -8, -10, '#0066ff'), (-10, -12, '#ffffff'),
+    (-12, -14, '#003399'),  (-14, -16, '#ffffff'), (-16, -18, '#cc88ff'),
+    (-18, -20, '#ffffff'),  (-20, -22, '#8800cc'), (-22, -24, '#ffffff'),
+    (-24, -26, '#aaaaaa'),  (-26, -999,'#ffffff'),
+]
+_STATIC_GREEN_LO = -6
+
+
+def _doy(month, day):
+    try:
+        return date(2001, month, day).timetuple().tm_yday
+    except ValueError:
+        return 999
+
+
+def _get_normal_band(pressure_level, today=None):
+    if today is None:
+        today = date.today()
+    table     = _NORMALS_850 if pressure_level == 850 else _NORMALS_500
+    today_doy = today.timetuple().tm_yday
+    best_hi = best_lo = None
+    best_doy = -1
+    for (m, d, hi, lo) in table:
+        entry_doy = _doy(m, d)
+        if entry_doy <= today_doy and entry_doy > best_doy:
+            best_doy = entry_doy
+            best_hi, best_lo = hi, lo
+    if best_hi is None:
+        best_hi, best_lo = table[-1][2], table[-1][3]
+    return best_hi, best_lo
+
+
+def _make_ua_temp_bands(pressure_level, today=None):
+    if today is None:
+        today = date.today()
+    normal_hi, normal_lo = _get_normal_band(pressure_level, today)
+    shift = normal_lo - _STATIC_GREEN_LO
+    return [(bhi + shift, blo + shift, col) for (bhi, blo, col) in _UA_TEMP_BANDS_BASE]
+
+
+_TODAY           = date.today()
+UA_TEMP_BANDS_850 = _make_ua_temp_bands(850, _TODAY)
+UA_TEMP_BANDS_500 = _make_ua_temp_bands(500, _TODAY)
+UA_TEMP_BAND_SHOW = True
+UA_TEMP_BAND_BASE_850 = 0
+UA_TEMP_BAND_BASE_500 = 0
+UA_TEMP_BAND_OPACITY  = 0.25
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  METAR HELPERS
+# ══════════════════════════════════════════════════════════════════════════
+def load_stations(url, coverage='chart'):
+    r = requests.get(url, timeout=15)
+    r.raise_for_status()
+    reader   = csv.DictReader(io.StringIO(r.text))
+    stations = {}
+    for row in reader:
+        icao = row.get('Code', '').strip()
+        if not icao:
+            continue
+        if coverage == 'chart':
+            chart_keys = [k for k in row.keys() if k.strip().lower() == 'chart']
+            chart_val  = row.get(chart_keys[0], '').strip() if chart_keys else ''
+            if not chart_val:
+                continue
+        else:
+            tier_map = {'essential': 1, 'standard': 2, 'all': 3}
+            max_tier = tier_map.get(coverage, 2)
+            tier = (1 if row.get('ESSENTIAL', '').strip() else
+                    2 if row.get('STANDARD',  '').strip() else 3)
+            if tier > max_tier:
+                continue
+        try:
+            stations[icao] = {
+                'icao': icao,
+                'name': row.get('Name', '').strip(),
+                'lat':  float(row['Latitude']),
+                'lon':  float(row['Longitude']),
+                'tier': 0 if coverage == 'chart' else tier
+            }
+        except (ValueError, KeyError):
+            pass
+    return stations
+
+
+def fetch_chunk(codes, hours=12, retries=3, backoff=2):
+    for attempt in range(retries):
+        try:
+            r = requests.get(
+                METAR_API,
+                params={'ids': ','.join(codes), 'format': 'raw',
+                        'hours': hours, 'mostRecent': 'false'},
+                timeout=30
+            )
+            if r.ok and r.text.strip():
+                return r.text, []
+            time.sleep(backoff * (attempt + 1))
+        except Exception:
+            time.sleep(backoff * (attempt + 1))
+    return '', codes
+
+
+def fetch_all_metars(station_codes, chunk_size=25, max_workers=6, hours=12):
+    chunks    = [station_codes[i:i+chunk_size]
+                 for i in range(0, len(station_codes), chunk_size)]
+    raw_parts = []
+    failed    = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {ex.submit(fetch_chunk, c, hours): c for c in chunks}
+        for fut in concurrent.futures.as_completed(futures):
+            text, f = fut.result()
+            if text:
+                raw_parts.append(text)
+            failed.extend(f)
+    joined     = '\n'.join(raw_parts)
+    seen_icaos = set()
+    for line in joined.splitlines():
+        parts = line.strip().split()
+        if len(parts) >= 2:
+            icao = parts[1] if parts[0] in ('METAR', 'SPECI') else parts[0]
+            seen_icaos.add(icao)
+    silent = [s for s in station_codes
+              if s not in seen_icaos and s not in failed]
+    if silent:
+        retry_chunks = [silent[i:i+chunk_size]
+                        for i in range(0, len(silent), chunk_size)]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures2 = {ex.submit(fetch_chunk, c, hours, 2, 1): c
+                        for c in retry_chunks}
+            for fut in concurrent.futures.as_completed(futures2):
+                text, f = fut.result()
+                if text:
+                    raw_parts.append(text)
+                failed.extend(f)
+    return '\n'.join(raw_parts), failed
+
+
+def parse_metar_line(line, stations):
+    parts = line.strip().split()
+    if len(parts) < 5:
+        return None
+    idx = 0
+    if parts[0] == 'SPECI':
+        return None
+    if parts[0] == 'METAR':
+        idx = 1
+    if idx >= len(parts):
+        return None
+    icao = parts[idx]
+    if icao not in stations:
+        return None
+    st     = stations[icao]
+    ts_raw = parts[idx+1] if idx+1 < len(parts) else ''
+    if not re.match(r'^\d{6}Z$', ts_raw):
+        return None
+    day  = int(ts_raw[0:2])
+    hour = int(ts_raw[2:4])
+    minute = int(ts_raw[4:6])
+    if minute >= 35:
+        hour = (hour + 1) % 24; minute = 0
+    elif minute <= 25:
+        minute = 0
+    else:
+        return None
+    timestamp = f'{day:02d}{hour:02d}00Z'
+    rest = [p for p in parts[idx+2:] if p not in ('MISG', 'MSIG')]
+
+    wind_dir = wind_spd = wind_gust = None
+    for p in rest:
+        m = re.match(r'^(\d{3})(\d{2,3})(?:G(\d{2,3}))?KT$', p)
+        if m:
+            wind_dir, wind_spd = int(m[1]), int(m[2])
+            wind_gust = int(m[3]) if m[3] else 0
+            break
+        if re.match(r'^00000KT$', p):
+            wind_dir = wind_spd = wind_gust = 0
+            break
+
+    vis = None
+    for i, p in enumerate(rest):
+        if p.endswith('SM'):
+            whole    = int(rest[i-1]) if i > 0 and rest[i-1].isdigit() else 0
+            frac_str = p[:-2].lstrip('M')
+            if '/' in frac_str:
+                try:
+                    n, d = frac_str.split('/')
+                    vis = whole + int(n) / int(d)
+                except (ValueError, ZeroDivisionError):
+                    vis = 0.0
+            else:
+                try:
+                    vis = whole + float(frac_str) if frac_str else float(whole)
+                except Exception:
+                    vis = None
+            break
+
+    cloud_re = re.compile(r'^(FEW|SCT|BKN|OVC|VV)(\d{3})')
+    clouds   = []
+    for p in rest:
+        m = cloud_re.match(p)
+        if m:
+            clouds.append({'cover': m[1], 'height': int(m[2]), 'raw': p})
+    clouds.sort(key=lambda c: c['height'])
+    clr         = any(p in ('CLR', 'SKC', 'CAVOK') for p in rest)
+    has_sky_obs = clr or bool(clouds)
+    cover_rank  = {'CLR':0,'SKC':0,'FEW':2,'SCT':4,'BKN':6,'OVC':8,'VV':9}
+    if clr or not clouds:
+        oktas = 0
+    else:
+        sig   = [c for c in clouds if c['cover'] in ('BKN','OVC','VV')]
+        pool  = sig if sig else clouds
+        oktas = max(cover_rank.get(c['cover'], 0) for c in pool)
+    sig_clouds = [c for c in clouds if c['cover'] in ('BKN','OVC','VV')]
+    ceiling    = sig_clouds[0]['height'] * 100 if sig_clouds else 99999
+    lowest_sig = sig_clouds[0] if sig_clouds else None
+
+    temp = dew = None
+    for p in rest:
+        m = re.match(r'^(M?\d{1,2})/(M?\d{1,2})$', p)
+        if m:
+            def td(s): return -(int(s[1:])) if s.startswith('M') else int(s)
+            temp, dew = td(m[1]), td(m[2])
+            break
+
+    slp = None
+    for p in rest:
+        m = re.match(r'^SLP(\d{3})$', p)
+        if m:
+            v   = int(m[1])
+            slp = (900 + v/10) if v >= 500 else (1000 + v/10)
+            break
+
+    wx_re   = re.compile(
+        r'^[+-]?(FZ|SH|BL|TS|MI|PR|BC|DR)?'
+        r'(DZ|RA|SN|SG|IC|PL|GR|GS|UP|FG|BR|HZ|FU|VA|DU|SA|SQ|PO|FC|SS|DS){1,3}$'
+    )
+    wx_parts = [p for p in rest
+                if wx_re.match(p)
+                and not re.match(r'^(RMK|SLP|AUTO|COR|AO\d)', p)]
+    weather  = ' '.join(wx_parts)
+
+    rh = None
+    if temp is not None and dew is not None:
+        a, b = 17.625, 243.04
+        rh   = round(100 * np.exp((a*dew/(b+dew)) - (a*temp/(b+temp))))
+        rh   = max(0, min(100, rh))
+
+    t_td = round(temp - dew, 1) if temp is not None and dew is not None else None
+
+    fc_vis = vis if vis is not None else 99
+    if   ceiling < 500  or fc_vis < 1: flt_cat = 'LIFR'
+    elif ceiling < 1000 or fc_vis < 3: flt_cat = 'IFR'
+    elif ceiling < 3000 or fc_vis < 5: flt_cat = 'MVFR'
+    else:                               flt_cat = 'VFR'
+
+    slp_label = f'{int(round(slp*10))%1000:03d}' if slp else ''
+
+    return dict(
+        icao=icao, name=st['name'], lat=st['lat'], lon=st['lon'],
+        timestamp=timestamp, wind_dir=wind_dir, wind_spd=wind_spd,
+        wind_gust=wind_gust, vis=vis, temp=temp, dew=dew, rh=rh,
+        t_td=t_td, slp=slp, slp_label=slp_label, has_sky_obs=has_sky_obs,
+        oktas=oktas, clouds=clouds, lowest_sig=lowest_sig, ceiling=ceiling,
+        weather=weather, flt_cat=flt_cat, tendency=None, pressure_change=None
+    )
+
+
+def parse_all(text, stations):
+    results = []
+    seen    = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if not re.match(r'^(METAR |SPECI |[A-Z]{4} \d{6}Z)', line):
+            continue
+        if line.startswith(('MISG','MSIG','SIGMET','AIRMET','PIREP','ATIS')):
+            continue
+        d = parse_metar_line(line, stations)
+        if d:
+            key = (d['icao'], d['timestamp'])
+            if key not in seen:
+                seen.add(key)
+                results.append(d)
+    return results
+
+
+def classify_tendency_detailed(slp_series):
+    if len(slp_series) < 2:
+        return None, None
+    slp_vals = [s for _, s in slp_series if s is not None]
+    if len(slp_vals) < 2:
+        return None, None
+    first = slp_vals[0]
+    last  = slp_vals[-1]
+    mid   = slp_vals[len(slp_vals) // 2]
+    diff_total = last - first
+    diff_first = mid  - first
+    diff_last  = last - mid
+    STEADY = 1.0
+    change = int(round(diff_total * 10))
+    def sign(x): return 1 if x > STEADY else (-1 if x < -STEADY else 0)
+    s1, s2 = sign(diff_first), sign(diff_last)
+    if   s1 ==  1 and s2 ==  1: return 'rising',         change
+    elif s1 == -1 and s2 == -1: return 'falling',        change
+    elif s1 ==  0 and s2 ==  0: return 'steady',         change
+    elif s1 ==  1 and s2 == -1: return 'rising_falling', change
+    elif s1 == -1 and s2 ==  1: return 'falling_rising', change
+    elif s1 ==  1 and s2 ==  0: return 'rising_steady',  change
+    elif s1 == -1 and s2 ==  0: return 'falling_steady', change
+    elif s1 ==  0 and s2 ==  1: return 'rising',         change
+    elif s1 ==  0 and s2 == -1: return 'falling',        change
+    else:                        return 'steady',         change
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  GRID / CONTOUR HELPERS
+# ══════════════════════════════════════════════════════════════════════════
+def build_grid(records, field, method='rbf', N=220, pad=1.5,
+               rbf_smoothing=0.3, sigma=3.0):
+    pts = [(d['lat'], d['lon'], d[field])
+           for d in records if d.get(field) is not None]
+    if len(pts) < 8:
+        return None, None, None, None, None
+    seen = {}
+    for la, lo, v in pts:
+        seen.setdefault((round(la,2), round(lo,2)), []).append(v)
+    pts  = [(k[0], k[1], float(np.mean(vs))) for k, vs in seen.items()]
+    if len(pts) < 8:
+        return None, None, None, None, None
+    lats = np.array([p[0] for p in pts])
+    lons = np.array([p[1] for p in pts])
+    vals = np.array([p[2] for p in pts], dtype=float)
+    lon_vec = np.linspace(lons.min()-pad, lons.max()+pad, N)
+    lat_vec = np.linspace(lats.min()-pad, lats.max()+pad, N)
+    glon, glat = np.meshgrid(lon_vec, lat_vec)
+    try:
+        rbf = RBFInterpolator(np.column_stack([lons, lats]), vals,
+                              kernel='thin_plate_spline',
+                              smoothing=max(rbf_smoothing * len(pts), 1e-6))
+    except np.linalg.LinAlgError:
+        rbf = RBFInterpolator(np.column_stack([lons, lats]), vals,
+                              kernel='linear',
+                              smoothing=max(rbf_smoothing * len(pts), 1.0))
+    grid = rbf(np.column_stack([glon.ravel(), glat.ravel()])).reshape(N, N)
+    if sigma > 0:
+        grid = gaussian_filter(grid, sigma=sigma)
+    return grid, lon_vec, lat_vec, lons, lats
+
+
+def find_hl_centers(grid, lon_vec, lat_vec,
+                    neighborhood=20, min_delta=2.0, metar_records=None):
+    sg    = gaussian_filter(grid, sigma=HL_SIGMA)
+    max_f = maximum_filter(sg, size=neighborhood)
+    min_f = minimum_filter(sg, size=neighborhood)
+    is_max = (sg == max_f) & (sg - min_f > min_delta)
+    is_min = (sg == min_f) & (max_f - sg > min_delta)
+    centers = []
+    for typ, mask in [('H', is_max), ('L', is_min)]:
+        lbl, n = label(mask)
+        for i in range(1, n+1):
+            rows, cols = np.where(lbl == i)
+            best = np.argmax(sg[rows,cols]) if typ=='H' else np.argmin(sg[rows,cols])
+            r, c = rows[best], cols[best]
+            if r < neighborhood or r > len(lat_vec)-neighborhood: continue
+            if c < neighborhood or c > len(lon_vec)-neighborhood: continue
+            _grid_val = float(grid[r, c])
+            def _grid_at(sla, slo):
+                _ri = int(round((sla - lat_vec[0])/(lat_vec[-1]-lat_vec[0])*(len(lat_vec)-1)))
+                _ci = int(round((slo - lon_vec[0])/(lon_vec[-1]-lon_vec[0])*(len(lon_vec)-1)))
+                return float(grid[max(0,min(len(lat_vec)-1,_ri)),
+                                   max(0,min(len(lon_vec)-1,_ci))])
+            _thresh = SLP_INTERVAL
+            if metar_records:
+                if typ == 'H':
+                    _inside = [d['slp'] for d in metar_records
+                               if d['slp'] is not None
+                               and _grid_at(d['lat'], d['lon']) >= _grid_val - _thresh]
+                    _val = (math.floor(max(_inside))+1) if _inside else (math.floor(_grid_val)+1)
+                else:
+                    _inside = [d['slp'] for d in metar_records
+                               if d['slp'] is not None
+                               and _grid_at(d['lat'], d['lon']) <= _grid_val + _thresh]
+                    _val = (math.ceil(min(_inside))-1) if _inside else (math.ceil(_grid_val)-1)
+            else:
+                _val = _grid_val
+            centers.append(dict(type=typ, lat=lat_vec[r], lon=lon_vec[c],
+                                val=float(_val)))
+    return centers
+
+
+def _rbf_grid_ua(la, lo, va, N=180, pad=1.5, sigma=1.5):
+    seen = {}
+    for a, o, v in zip(la, lo, va):
+        seen.setdefault((round(a,2), round(o,2)), []).append(v)
+    pts = [(k[0], k[1], float(np.mean(vs))) for k, vs in seen.items()]
+    if len(pts) < 8:
+        return None, None, None
+    la2 = np.array([p[0] for p in pts])
+    lo2 = np.array([p[1] for p in pts])
+    va2 = np.array([p[2] for p in pts])
+    lv  = np.linspace(lo2.min()-pad, lo2.max()+pad, N)
+    ltv = np.linspace(la2.min()-pad, la2.max()+pad, N)
+    GL, GLA = np.meshgrid(lv, ltv)
+    try:
+        rbf  = RBFInterpolator(np.column_stack([lo2, la2]), va2,
+                               kernel='thin_plate_spline',
+                               smoothing=max(0.3*len(pts), 1e-6))
+        grid = rbf(np.column_stack([GL.ravel(), GLA.ravel()])).reshape(N, N)
+    except Exception:
+        return None, None, None
+    return gaussian_filter(grid, sigma=sigma), lv, ltv
+
+
+def _pts_to_segs(pts, max_dist=M5_MAX_DIST, min_pts=M5_MIN_PTS):
+    if len(pts) < min_pts:
+        return []
+    arr = np.array(pts)
+    dedup = {}
+    for r in arr:
+        k = (round(r[0]*2)/2, round(r[1]*2)/2)
+        if k not in dedup or r[2] > dedup[k][2]:
+            dedup[k] = r
+    arr = np.array(list(dedup.values()))
+    if len(arr) < min_pts:
+        return []
+    tree   = cKDTree(arr[:,:2])
+    pairs  = tree.query_pairs(max_dist)
+    parent = list(range(len(arr)))
+    def _find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]; x = parent[x]
+        return x
+    for a, b in pairs:
+        ra, rb = _find(a), _find(b)
+        if ra != rb: parent[ra] = rb
+    clusters = {}
+    for i in range(len(arr)):
+        clusters.setdefault(_find(i), []).append(i)
+    segs = []
+    for idxs in clusters.values():
+        if len(idxs) < min_pts: continue
+        sp  = sorted([(arr[i][0], arr[i][1]) for i in idxs], key=lambda p: p[0])
+        sub, cur = [], [sp[0]]
+        for k in range(1, len(sp)):
+            if (abs(sp[k][0]-sp[k-1][0]) > max_dist*1.5 or
+                abs(sp[k][1]-sp[k-1][1]) > max_dist*1.5):
+                if len(cur) >= min_pts: sub.append(cur)
+                cur = []
+            cur.append(sp[k])
+        if len(cur) >= min_pts: sub.append(cur)
+        segs.extend(sub)
+    return segs
+
+
+def detect_m5(T, lv, ltv):
+    Ts = gaussian_filter(T, sigma=M5_SIGMA)
+    ridge_pts, trough_pts = [], []
+    for j, lat in enumerate(ltv):
+        row = Ts[j, :]
+        pk, pr = find_peaks(row, prominence=M5_PROMINENCE, width=M5_WIDTH)
+        if len(pk):
+            top = np.argsort(pr['prominences'])[-M5_MAX_PEAKS:]
+            for idx in pk[top]:
+                prom = pr['prominences'][np.where(pk == idx)[0][0]]
+                ridge_pts.append((lat, lv[idx], float(prom)))
+        tr, tpr = find_peaks(-row, prominence=M5_PROMINENCE, width=M5_WIDTH)
+        if len(tr):
+            top = np.argsort(tpr['prominences'])[-M5_MAX_PEAKS:]
+            for idx in tr[top]:
+                prom = tpr['prominences'][np.where(tr == idx)[0][0]]
+                trough_pts.append((lat, lv[idx], float(prom)))
+    return _pts_to_segs(ridge_pts), _pts_to_segs(trough_pts)
+
+
+def _build_contours_for_field(recs_df, field_col, interval, fixed_levels=None):
+    pts = []
+    for _, row in recs_df.iterrows():
+        v = row.get(field_col)
+        if v is None or (isinstance(v, float) and np.isnan(v)): continue
+        pts.append((row['lat'], row['lon'], float(v)))
+    if len(pts) < 8: return []
+    seen = {}
+    for la, lo, v in pts:
+        seen.setdefault((round(la,2), round(lo,2)), []).append(v)
+    pts  = [(k[0], k[1], float(np.mean(vs))) for k, vs in seen.items()]
+    if len(pts) < 8: return []
+    lats = np.array([p[0] for p in pts])
+    lons = np.array([p[1] for p in pts])
+    vals = np.array([p[2] for p in pts])
+    pad = 1.5; N = 180
+    lon_vec = np.linspace(lons.min()-pad, lons.max()+pad, N)
+    lat_vec = np.linspace(lats.min()-pad, lats.max()+pad, N)
+    glon, glat = np.meshgrid(lon_vec, lat_vec)
+    try:
+        rbf  = RBFInterpolator(np.column_stack([lons, lats]), vals,
+                               kernel='thin_plate_spline',
+                               smoothing=max(0.3*len(pts), 1e-6))
+        grid = rbf(np.column_stack([glon.ravel(), glat.ravel()])).reshape(N, N)
+    except Exception:
+        return []
+    grid = gaussian_filter(grid, sigma=2.5)
+    if fixed_levels is not None:
+        levels = fixed_levels
+    else:
+        vmin   = np.floor(grid.min()/interval)*interval
+        vmax   = np.ceil( grid.max()/interval)*interval
+        levels = np.arange(vmin, vmax+interval, interval)
+    if len(levels) < 2: return []
+    fig, ax = plt.subplots(figsize=(1,1))
+    try:
+        cs = ax.contour(glon, glat, grid, levels=levels)
+    except Exception:
+        plt.close(fig); return []
+    plt.close(fig)
+    segments = []
+    for li, lv in enumerate(cs.levels):
+        for coords in cs.allsegs[li]:
+            if len(coords) < 2: continue
+            mid = coords[len(coords)//2]
+            segments.append({'level': float(lv),
+                             'coords': [[float(c[0]), float(c[1])] for c in coords],
+                             'label_lon': float(mid[0]), 'label_lat': float(mid[1])})
+    return segments
+
+
+def _build_temp_band_fills(grid, lon_vec, lat_vec, ua_temp_bands, tb_base):
+    abs_levels = sorted(set(
+        [tb_base + b[0] for b in ua_temp_bands] +
+        [tb_base + b[1] for b in ua_temp_bands]
+    ))
+    if len(abs_levels) < 2: return []
+    data_min, data_max = grid.min(), grid.max()
+    abs_levels = [l for l in abs_levels if data_min-0.5 <= l <= data_max+0.5]
+    if len(abs_levels) < 2: return []
+    sentinel_lo = data_min - 1.0
+    sentinel_hi = data_max + 1.0
+    abs_levels  = [sentinel_lo] + abs_levels + [sentinel_hi]
+    grid        = np.clip(grid, abs_levels[0]+0.001, abs_levels[-1]-0.001)
+    colors_list = ['#ffffff']
+    for i in range(1, len(abs_levels)-2):
+        lo, hi, matched = abs_levels[i], abs_levels[i+1], '#ffffff'
+        for b in ua_temp_bands:
+            blo = min(tb_base+b[0], tb_base+b[1])
+            bhi = max(tb_base+b[0], tb_base+b[1])
+            if abs(lo-blo) < 0.1 and abs(hi-bhi) < 0.1:
+                matched = b[2]; break
+        colors_list.append(matched)
+    colors_list.append('#ffffff')
+    glon, glat = np.meshgrid(lon_vec, lat_vec)
+    fig, ax    = plt.subplots(figsize=(1,1))
+    try:
+        cf = ax.contourf(glon, glat, grid, levels=abs_levels,
+                         colors=colors_list, extend='neither')
+    except Exception as e:
+        plt.close(fig); return []
+    fills = []
+    for i, col_hex in enumerate(colors_list):
+        if i >= len(cf.levels)-1: break
+        try:
+            for seg in cf.allsegs[i]:
+                if len(seg) < 3: continue
+                fills.append({'color': col_hex,
+                              'coords': [[float(v[0]), float(v[1])] for v in seg]})
+        except (AttributeError, IndexError):
+            pass
+    plt.close(fig)
+    return fills
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  UPPER-AIR FETCH
+# ══════════════════════════════════════════════════════════════════════════
+def get_sounding_dt(hour, lookback_days=0):
+    now = datetime.now(timezone.utc)
+    dt  = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if dt > now:
+        dt -= timedelta(days=1)
+    return dt - timedelta(days=lookback_days)
+
+
+def fetch_raw_ua(stn, hour, lookback=0):
+    dt     = get_sounding_dt(hour, lookback)
+    dt_str = f'{dt.strftime("%Y-%m-%d")} {hour}:00:00'
+    url    = (f'{WYOMING_BASE}?datetime={quote(dt_str)}'
+              f'&id={stn["wmo"]}&src=BUFR&type=TEXT:LIST')
+    try:
+        r = requests.get(url, timeout=UA_TIMEOUT)
+        if not r.ok or len(r.text) < 300:
+            return None
+        txt = r.text
+        if any(x in txt for x in ("Can't get", "No Observation", "ERROR")):
+            return None
+        return txt
+    except Exception:
+        return None
+
+
+def parse_sounding(html, stn, hour, lookback=0):
+    dt = get_sounding_dt(hour, lookback)
+    obs_lat = obs_lon = obs_name = None
+    lat_m = re.search(r'Latitude:\s*([-\d.]+)',  html, re.I)
+    lon_m = re.search(r'Longitude:\s*([-\d.]+)', html, re.I)
+    if lat_m: obs_lat = float(lat_m.group(1))
+    if lon_m: obs_lon = float(lon_m.group(1))
+    h2 = re.search(r'<h2[^>]*>([\s\S]*?)</h2>', html, re.I)
+    if h2:
+        txt   = re.sub(r'<[^>]+>', ' ', h2.group(1))
+        lines = [l.strip() for l in txt.split('\n') if l.strip()]
+        if len(lines) >= 2:
+            obs_name = lines[-1]
+    pre = re.search(r'<pre>([\s\S]*?)</pre>', html, re.I)
+    if not pre:
+        return []
+    rows = []
+    for line in pre.group(1).split('\n'):
+        cols = line.strip().split()
+        if len(cols) < 7: continue
+        try:
+            pres = float(cols[0])
+        except ValueError:
+            continue
+        if not (100 <= pres <= 1100): continue
+        def fv(i):
+            try:
+                v = float(cols[i])
+                return None if abs(v) > 9000 else v
+            except (IndexError, ValueError):
+                return None
+        rows.append({
+            'icao': stn['id'], 'wmo': stn['wmo'],
+            'stn_name': obs_name or stn['name'],
+            'lat': obs_lat or stn['lat'], 'lon': obs_lon or stn['lon'],
+            'valid_time': dt.strftime('%Y-%m-%d') + f' {hour:02d}Z',
+            'hour': hour, 'PRES': pres,
+            'HGHT': fv(1), 'TEMP': fv(2), 'DWPT': fv(3),
+            'RELH': fv(4), 'MIXR': fv(5), 'DRCT': fv(6), 'SPED': fv(7),
+            'THTA': fv(8) if len(cols) > 8  else None,
+            'THTE': fv(9) if len(cols) > 9  else None,
+            'THTV': fv(10) if len(cols) > 10 else None,
+        })
+    return rows
+
+
+def fetch_all_ua(stations, hours=UA_HOURS, workers=UA_WORKERS):
+    tasks    = [(s, h) for s in stations for h in hours]
+    all_rows = []
+    failed   = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        fmap = {ex.submit(fetch_raw_ua, s, h): (s, h) for s, h in tasks}
+        for fut in concurrent.futures.as_completed(fmap):
+            s, h = fmap[fut]
+            html = fut.result()
+            if html:
+                rows = parse_sounding(html, s, h)
+                if rows:
+                    all_rows.extend(rows)
+                    continue
+            failed.append((s, h))
+    if failed:
+        retry  = failed[:]
+        failed = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+            fmap2 = {ex.submit(fetch_raw_ua, s, h, 1): (s, h) for s, h in retry}
+            for fut in concurrent.futures.as_completed(fmap2):
+                s, h = fmap2[fut]
+                html = fut.result()
+                if html:
+                    rows = parse_sounding(html, s, h, lookback=1)
+                    if rows:
+                        all_rows.extend(rows)
+                        continue
+                failed.append((s, h))
+    return all_rows
+
+
+def build_ua_summary(raw_rows):
+    FIELDS = ['PRES','HGHT','TEMP','DWPT','RELH','MIXR','DRCT','SPED','THTA','THTE','THTV']
+    ua_raw_df = pd.DataFrame(raw_rows)
+    _latest   = ua_raw_df.groupby('hour')['valid_time'].max()
+    mask      = ua_raw_df['valid_time'] == ua_raw_df['hour'].map(_latest)
+    ua_raw_df = ua_raw_df[mask].reset_index(drop=True)
+
+    summary_rows = []
+    for (icao, hour), grp in ua_raw_df.groupby(['icao','hour'], sort=False):
+        grp  = grp.sort_values('PRES', ascending=False).reset_index(drop=True)
+        meta = grp.iloc[0]
+        base = {
+            'icao': icao, 'wmo': meta['wmo'], 'stn_name': meta['stn_name'],
+            'lat': meta['lat'], 'lon': meta['lon'],
+            'valid_time': meta['valid_time'], 'hour': hour,
+        }
+        for lvl in STANDARD_LEVELS:
+            sub = grp.copy()
+            sub['_dist'] = (sub['PRES'] - lvl).abs()
+            sub = sub[sub['_dist'] <= LEVEL_TOL]
+            if sub.empty:
+                for f in FIELDS: base[f'{f}_{lvl}'] = None
+            else:
+                best = sub.loc[sub['_dist'].idxmin()]
+                for f in FIELDS:
+                    base[f'{f}_{lvl}'] = best[f] if not pd.isna(best[f]) else None
+        summary_rows.append(base)
+    return pd.DataFrame(summary_rows).sort_values(['icao','hour']).reset_index(drop=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  CONVERGENCE HELPERS
+# ══════════════════════════════════════════════════════════════════════════
+def _drct_sped_to_uv(drct_deg, sped_ms):
+    rad = math.radians(drct_deg)
+    return -sped_ms * math.sin(rad), -sped_ms * math.cos(rad)
+
+
+def build_wind_grids(pts_u, pts_v, N=CONV_GRID_N,
+                     rbf_smooth=CONV_RBF_SMOOTH, sigma=CONV_SIGMA, pad=1.5):
+    if len(pts_u) < 6 or len(pts_v) < 6:
+        return None, None, None, None
+    def _dedup(pts):
+        seen = {}
+        for la, lo, v in pts:
+            k = (round(la,1), round(lo,1))
+            seen.setdefault(k, []).append(v)
+        return [(k[0],k[1],float(np.mean(vs))) for k,vs in seen.items()]
+    pts_u = _dedup(pts_u); pts_v = _dedup(pts_v)
+    if len(pts_u) < 6 or len(pts_v) < 6:
+        return None, None, None, None
+    lats_u = np.array([p[0] for p in pts_u])
+    lons_u = np.array([p[1] for p in pts_u])
+    vals_u = np.array([p[2] for p in pts_u])
+    lats_v = np.array([p[0] for p in pts_v])
+    lons_v = np.array([p[1] for p in pts_v])
+    vals_v = np.array([p[2] for p in pts_v])
+    lat_min = min(lats_u.min(), lats_v.min()) - pad
+    lat_max = max(lats_u.max(), lats_v.max()) + pad
+    lon_min = min(lons_u.min(), lons_v.min()) - pad
+    lon_max = max(lons_u.max(), lons_v.max()) + pad
+    lon_vec = np.linspace(lon_min, lon_max, N)
+    lat_vec = np.linspace(lat_min, lat_max, N)
+    glon, glat = np.meshgrid(lon_vec, lat_vec)
+    qi = np.column_stack([glon.ravel(), glat.ravel()])
+    def _rbf(lons, lats, vals):
+        try:
+            rbf = RBFInterpolator(np.column_stack([lons, lats]), vals,
+                                  kernel='thin_plate_spline',
+                                  smoothing=max(rbf_smooth*len(vals), 1e-6))
+        except np.linalg.LinAlgError:
+            rbf = RBFInterpolator(np.column_stack([lons, lats]), vals,
+                                  kernel='linear',
+                                  smoothing=max(rbf_smooth*len(vals), 1.0))
+        return gaussian_filter(rbf(qi).reshape(N, N), sigma=sigma)
+    return (_rbf(lons_u, lats_u, vals_u),
+            _rbf(lons_v, lats_v, vals_v),
+            lon_vec, lat_vec)
+
+
+def compute_divergence_grid(u_grid, v_grid, lon_vec, lat_vec):
+    ny, nx   = u_grid.shape
+    mean_lat = lat_vec
+    dlon_m   = np.zeros((ny, nx))
+    for i in range(ny):
+        dx_deg      = lon_vec[1] - lon_vec[0]
+        dlon_m[i,:] = dx_deg * 111320.0 * np.cos(np.radians(mean_lat[i]))
+    du_dx = np.gradient(u_grid, axis=1) / dlon_m
+    dlat_m = (lat_vec[1] - lat_vec[0]) * 111320.0
+    dv_dy  = np.gradient(v_grid, axis=0) / dlat_m
+    return du_dx + dv_dy
+
+
+def extract_convergence_contours(div_grid, lon_vec, lat_vec,
+                                  threshold=CONV_THRESHOLD):
+    glon, glat = np.meshgrid(lon_vec, lat_vec)
+    fig, ax = plt.subplots(figsize=(1,1))
+    try:
+        cs = ax.contour(glon, glat, div_grid, levels=[threshold])
+    except Exception:
+        plt.close(fig); return []
+    plt.close(fig)
+    segs = []
+    for li, lv in enumerate(cs.levels):
+        for coords in cs.allsegs[li]:
+            if len(coords) < 3: continue
+            mid = coords[len(coords)//2]
+            segs.append({'level': float(lv),
+                         'coords': [[float(c[0]), float(c[1])] for c in coords],
+                         'label_lon': float(mid[0]), 'label_lat': float(mid[1])})
+    return segs
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  MAIN
+# ══════════════════════════════════════════════════════════════════════════
+def main():
+    print(f"=== Synoptic update: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} ===")
+
+    # ── METAR ─────────────────────────────────────────────────────────────
+    print('\n[1/6] Loading station list...')
+    STATIONS = load_stations(CSV_URL, COVERAGE)
+    print(f'  {len(STATIONS)} stations loaded')
+
+    print('[2/6] Fetching METARs...')
+    raw_text, _ = fetch_all_metars(list(STATIONS.keys()), hours=12)
+    metar_records = parse_all(raw_text, STATIONS)
+    print(f'  {len(metar_records)} records parsed')
+
+    # Pressure tendency
+    from collections import defaultdict
+    station_slp_series = defaultdict(list)
+    for d in metar_records:
+        if d['slp'] is not None:
+            station_slp_series[d['icao']].append((d['timestamp'], d['slp']))
+    for icao in station_slp_series:
+        station_slp_series[icao].sort(key=lambda x: x[0])
+    for d in metar_records:
+        series = [(ts, slp) for ts, slp in station_slp_series[d['icao']]
+                  if ts <= d['timestamp']]
+        if len(series) >= 2:
+            tend, change = classify_tendency_detailed(series)
+            d['tendency']        = tend
+            d['pressure_change'] = change
+
+    # ── SLP grid (used globally) ──────────────────────────────────────────
+    slp_grid, lon_vec, lat_vec, _, _ = build_grid(
+        metar_records, 'slp', method=INTERP_METHOD, N=GRID_N,
+        rbf_smoothing=RBF_SMOOTHING, sigma=SIGMA_SMOOTH)
+
+    # ── Upper-air ──────────────────────────────────────────────────────────
+    print('[3/6] Fetching upper-air soundings...')
+    raw_ua    = fetch_all_ua(UPPER_AIR_STATIONS)
+    ua_summary_df = build_ua_summary(raw_ua)
+    print(f'  {len(ua_summary_df)} station-hour rows')
+    _ua_times = ua_summary_df.groupby('hour')['valid_time'].max().reset_index()
+    _ua_date_map = {str(int(r['hour'])): str(r['valid_time'])
+                    for _, r in _ua_times.iterrows()}
+
+    # ── Block 01 — ridge/trough ────────────────────────────────────────────
+    print('[4/6] Computing ridge/trough...')
+    rt_segs = {}
+    for _hr in sorted(ua_summary_df['hour'].unique()):
+        _df_hr = ua_summary_df[ua_summary_df['hour'] == _hr].copy()
+        rt_segs[int(_hr)] = {}
+        for lvl, key in [(850, '850'), (700, '700'), (500, '500')]:
+            col = f'TEMP_{lvl}'
+            rows = _df_hr.dropna(subset=[col, 'lat', 'lon'])
+            if len(rows) < 8:
+                rt_segs[int(_hr)][lvl] = ([], [])
+                continue
+            T, lv, ltv = _rbf_grid_ua(rows['lat'].values, rows['lon'].values,
+                                       rows[col].values, sigma=1.5)
+            if T is None:
+                rt_segs[int(_hr)][lvl] = ([], [])
+            else:
+                rt_segs[int(_hr)][lvl] = detect_m5(T, lv, ltv)
+
+    # ── Block 04 — per-timestamp SLP contours ─────────────────────────────
+    print('[5/6] Building per-timestamp contours...')
+    _ts_all = sorted(set(d['timestamp'] for d in metar_records if d['timestamp']))
+    _ts_slp = {}
+    for _ts in _ts_all:
+        _recs = [d for d in metar_records if d['timestamp'] == _ts]
+        _grid, _lv, _ltv, _, _ = build_grid(
+            _recs, 'slp', method=INTERP_METHOD, N=GRID_N,
+            rbf_smoothing=RBF_SMOOTHING, sigma=SIGMA_SMOOTH)
+        if _grid is None:
+            _ts_slp[_ts] = {'contours':[], 'hl':[], 'ttd_contours':[], 'tmp_contours':[]}
+            continue
+        _glon, _glat = np.meshgrid(_lv, _ltv)
+        _levels = np.arange(
+            np.floor(_grid.min()/SLP_INTERVAL)*SLP_INTERVAL,
+            np.ceil( _grid.max()/SLP_INTERVAL)*SLP_INTERVAL + SLP_INTERVAL,
+            SLP_INTERVAL)
+        _fig, _ax = plt.subplots(figsize=(1,1))
+        _cs = _ax.contour(_glon, _glat, _grid, levels=_levels)
+        plt.close(_fig)
+        _contours = []
+        for _li, _lvl in enumerate(_cs.levels):
+            _is_major = (int(_lvl) % 20 == 0)
+            _weight   = 2.5 if _is_major else (1.4 if int(_lvl)%8==0 else 0.7)
+            _opacity  = 0.95 if _is_major else (0.65 if int(_lvl)%8==0 else 0.40)
+            for _coords in _cs.allsegs[_li]:
+                if len(_coords) < 2: continue
+                _mid = _coords[len(_coords)//2]
+                _contours.append({'level': float(_lvl), 'weight': _weight,
+                    'opacity': _opacity,
+                    'coords': [[float(c[0]),float(c[1])] for c in _coords],
+                    'label_lon': float(_mid[0]), 'label_lat': float(_mid[1])})
+        _hl = find_hl_centers(_grid, _lv, _ltv,
+                              neighborhood=HL_NEIGHBORHOOD, min_delta=HL_MIN_DELTA,
+                              metar_records=_recs)
+        # T-Td contours
+        _ttd_grid, _ttd_lv, _ttd_ltv, _, _ = build_grid(
+            _recs, 't_td', method='rbf', N=GRID_N,
+            rbf_smoothing=TTD_RBF_SMOOTHING, sigma=TTD_SIGMA)
+        _ttd_contours = []
+        if _ttd_grid is not None:
+            _TTD_I = 2.0
+            _ttd_levels = np.arange(
+                np.floor(_ttd_grid.min()/_TTD_I)*_TTD_I,
+                np.ceil( _ttd_grid.max()/_TTD_I)*_TTD_I + _TTD_I, _TTD_I)
+            _glon_t, _glat_t = np.meshgrid(_ttd_lv, _ttd_ltv)
+            _fig_t, _ax_t = plt.subplots(figsize=(1,1))
+            _cs_t = _ax_t.contour(_glon_t, _glat_t, _ttd_grid, levels=_ttd_levels)
+            plt.close(_fig_t)
+            for _li_t, _lvl_t in enumerate(_cs_t.levels):
+                for _coords_t in _cs_t.allsegs[_li_t]:
+                    if len(_coords_t) < 2: continue
+                    _mid_t = _coords_t[len(_coords_t)//2]
+                    _ttd_contours.append({'level': float(_lvl_t),
+                        'coords': [[float(c[0]),float(c[1])] for c in _coords_t],
+                        'label_lon': float(_mid_t[0]), 'label_lat': float(_mid_t[1])})
+        # Temp contours
+        _tmp_grid2, _tmp_lv2, _tmp_ltv2, _, _ = build_grid(
+            _recs, 'temp', method='rbf', N=GRID_N,
+            rbf_smoothing=TMP_RBF_SMOOTHING, sigma=TMP_SIGMA)
+        _tmp_contours = []
+        if _tmp_grid2 is not None:
+            _TMP_I = 2.0
+            _tmp_levels = np.arange(
+                np.floor(_tmp_grid2.min()/_TMP_I)*_TMP_I,
+                np.ceil( _tmp_grid2.max()/_TMP_I)*_TMP_I + _TMP_I, _TMP_I)
+            _glon_m, _glat_m = np.meshgrid(_tmp_lv2, _tmp_ltv2)
+            _fig_m, _ax_m = plt.subplots(figsize=(1,1))
+            _cs_m = _ax_m.contour(_glon_m, _glat_m, _tmp_grid2, levels=_tmp_levels)
+            plt.close(_fig_m)
+            for _li_m, _lvl_m in enumerate(_cs_m.levels):
+                for _coords_m in _cs_m.allsegs[_li_m]:
+                    if len(_coords_m) < 2: continue
+                    _mid_m = _coords_m[len(_coords_m)//2]
+                    _tmp_contours.append({'level': float(_lvl_m),
+                        'coords': [[float(c[0]),float(c[1])] for c in _coords_m],
+                        'label_lon': float(_mid_m[0]), 'label_lat': float(_mid_m[1])})
+        _ts_slp[_ts] = {'contours': _contours, 'hl': _hl,
+                        'ttd_contours': _ttd_contours, 'tmp_contours': _tmp_contours}
+
+    # ── Block 05 — upper-air contours ─────────────────────────────────────
+    _ts_ua = {}
+    UA_HL_LEVELS = [850, 700, 500]
+    for _hr in sorted(ua_summary_df['hour'].unique()):
+        _df_hr  = ua_summary_df[ua_summary_df['hour'] == _hr].copy()
+        _hr_data = {}
+        _ua_hl_all = {}
+        for _plvl in UA_CONTOUR_LEVELS:
+            _lvl_data = {}
+            _fixed = UA_HGHT_LEVELS.get(_plvl)
+            _segs  = (_build_contours_for_field(_df_hr, f'HGHT_{_plvl}',
+                       _INTERVALS['HGHT'], fixed_levels=_fixed)
+                      if _fixed is not None else [])
+            _lvl_data['hght'] = _segs
+            _segs = _build_contours_for_field(_df_hr, f'TEMP_{_plvl}', _INTERVALS['TEMP'])
+            _lvl_data['temp'] = _segs
+            # temp band fills
+            _pts_fill = [(float(r['lat']), float(r['lon']), float(r[f'TEMP_{_plvl}']))
+                         for _, r in _df_hr.iterrows()
+                         if r.get(f'TEMP_{_plvl}') is not None
+                         and not (isinstance(r[f'TEMP_{_plvl}'], float)
+                                  and np.isnan(r[f'TEMP_{_plvl}']))]
+            _band_fills = []
+            if len(_pts_fill) >= 8:
+                _lats_f = np.array([p[0] for p in _pts_fill])
+                _lons_f = np.array([p[1] for p in _pts_fill])
+                _vals_f = np.array([p[2] for p in _pts_fill])
+                _lv_f   = np.linspace(_lons_f.min()-1.5, _lons_f.max()+1.5, 180)
+                _ltv_f  = np.linspace(_lats_f.min()-1.5, _lats_f.max()+1.5, 180)
+                try:
+                    _rbf_f = RBFInterpolator(
+                        np.column_stack([_lons_f, _lats_f]), _vals_f,
+                        kernel='thin_plate_spline',
+                        smoothing=max(0.3*len(_pts_fill), 1e-6))
+                    _glon_f, _glat_f = np.meshgrid(_lv_f, _ltv_f)
+                    _grid_f = _rbf_f(np.column_stack(
+                        [_glon_f.ravel(), _glat_f.ravel()])).reshape(180, 180)
+                    _grid_f = gaussian_filter(_grid_f, sigma=2.5)
+                    _bands  = UA_TEMP_BANDS_500 if _plvl in [500,250] else UA_TEMP_BANDS_850
+                    _band_fills = _build_temp_band_fills(_grid_f, _lv_f, _ltv_f, _bands, 0.0)
+                except Exception:
+                    pass
+            _lvl_data['temp_band_fills'] = _band_fills
+            # T-Td
+            _df_ttd = _df_hr.copy()
+            _t_col, _d_col = f'TEMP_{_plvl}', f'DWPT_{_plvl}'
+            if _t_col in _df_ttd.columns and _d_col in _df_ttd.columns:
+                _df_ttd[f'TTDP_{_plvl}'] = _df_ttd[_t_col] - _df_ttd[_d_col]
+                _segs = _build_contours_for_field(_df_ttd, f'TTDP_{_plvl}', _INTERVALS['TTDP'])
+            else:
+                _segs = []
+            _lvl_data['ttdp'] = _segs
+            _segs = _build_contours_for_field(_df_hr, f'SPED_{_plvl}', _INTERVALS['SPED'])
+            _lvl_data['sped'] = _segs
+            _hr_data[str(_plvl)] = _lvl_data
+
+        # instability
+        _instab_cts = []
+        _stn_lats, _stn_lons, _stn_vals = [], [], []
+        for _, _row in _df_hr.iterrows():
+            _v5 = _row.get('TEMP_500'); _v7 = _row.get('TEMP_700')
+            if (_v5 is None or _v7 is None
+                    or (isinstance(_v5, float) and np.isnan(_v5))
+                    or (isinstance(_v7, float) and np.isnan(_v7))): continue
+            _stn_lats.append(float(_row['lat']))
+            _stn_lons.append(float(_row['lon']))
+            _stn_vals.append(float(_v7) - float(_v5))
+        if _stn_vals:
+            _stn_lats = np.array(_stn_lats)
+            _stn_lons = np.array(_stn_lons)
+            _stn_vals = np.array(_stn_vals)
+            _NI = 180; _pad = 1.5
+            _ilon = np.linspace(_stn_lons.min()-_pad, _stn_lons.max()+_pad, _NI)
+            _ilat = np.linspace(_stn_lats.min()-_pad, _stn_lats.max()+_pad, _NI)
+            _iglon, _iglat = np.meshgrid(_ilon, _ilat)
+            _tree = cKDTree(np.column_stack([_stn_lons, _stn_lats]))
+            _dists, _idxs = _tree.query(
+                np.column_stack([_iglon.ravel(), _iglat.ravel()]), k=1)
+            _nn = _stn_vals[_idxs].astype(float)
+            _nn[_dists > 3.5] = np.nan
+            _diff_grid = _nn.reshape(_NI, _NI)
+            _diff_sm   = gaussian_filter(
+                np.where(np.isnan(_diff_grid), 0, _diff_grid), sigma=sigmaT700500)
+            _diff_sm[np.isnan(_diff_grid)] = np.nan
+            for _band_lvl in [16, 18]:
+                _binary = np.where(
+                    (~np.isnan(_diff_sm)) & (_diff_sm >= _band_lvl) &
+                    (_diff_sm < (_band_lvl+2) if _band_lvl==16
+                     else np.ones_like(_diff_sm, bool)),
+                    1.0, 0.0)
+                if _binary.max() < 0.5: continue
+                _fig_i, _ax_i = plt.subplots(figsize=(1,1))
+                try:
+                    _cs_i = _ax_i.contour(_iglon, _iglat, _binary, levels=[0.5])
+                    for _seg in _cs_i.allsegs[0]:
+                        if len(_seg) < 3: continue
+                        _mid_i = _seg[len(_seg)//2]
+                        _instab_cts.append({'level': float(_band_lvl),
+                            'coords': [[float(p[0]),float(p[1])] for p in _seg],
+                            'label_lon': float(_mid_i[0]), 'label_lat': float(_mid_i[1])})
+                except Exception: pass
+                plt.close(_fig_i)
+
+        # UA H/L
+        for _plvl in UA_HL_LEVELS:
+            _pts = [(float(r['lat']), float(r['lon']), float(r[f'HGHT_{_plvl}']))
+                    for _, r in _df_hr.iterrows()
+                    if r.get(f'HGHT_{_plvl}') is not None
+                    and not (isinstance(r[f'HGHT_{_plvl}'], float)
+                             and np.isnan(r[f'HGHT_{_plvl}']))]
+            if len(_pts) < 8:
+                _ua_hl_all[_plvl] = []
+                continue
+            _seen = {}
+            for _la, _lo, _v in _pts:
+                _seen.setdefault((round(_la,2), round(_lo,2)), []).append(_v)
+            _pts   = [(_k[0],_k[1],float(np.mean(_vs))) for _k,_vs in _seen.items()]
+            _la_u  = np.array([p[0] for p in _pts])
+            _lo_u  = np.array([p[1] for p in _pts])
+            _va_u  = np.array([p[2] for p in _pts])
+            _lv_u  = np.linspace(_lo_u.min()-1.5, _lo_u.max()+1.5, 180)
+            _ltv_u = np.linspace(_la_u.min()-1.5, _la_u.max()+1.5, 180)
+            _glon_u, _glat_u = np.meshgrid(_lv_u, _ltv_u)
+            try:
+                _rbf_u = RBFInterpolator(
+                    np.column_stack([_lo_u, _la_u]), _va_u,
+                    kernel='thin_plate_spline',
+                    smoothing=max(0.3*len(_pts), 1e-6))
+                _hght_grid = _rbf_u(np.column_stack(
+                    [_glon_u.ravel(), _glat_u.ravel()])).reshape(180, 180)
+            except Exception:
+                _ua_hl_all[_plvl] = []
+                continue
+            _hght_grid = gaussian_filter(_hght_grid, sigma=2.5)
+            sg    = gaussian_filter(_hght_grid, sigma=HL_SIGMA)
+            max_f = maximum_filter(sg, size=HL_NEIGHBORHOOD)
+            min_f = minimum_filter(sg, size=HL_NEIGHBORHOOD)
+            is_max = (sg == max_f) & (sg - min_f > 1.0)
+            is_min = (sg == min_f) & (max_f - sg > 1.0)
+            _ua_hl = []
+            for _typ, _mask in [('H', is_max), ('L', is_min)]:
+                _lbl2, _n = label(_mask)
+                for _i in range(1, _n+1):
+                    _rows, _cols = np.where(_lbl2 == _i)
+                    _best = (np.argmax(sg[_rows,_cols]) if _typ=='H'
+                             else np.argmin(sg[_rows,_cols]))
+                    _r, _c = _rows[_best], _cols[_best]
+                    if _r < HL_NEIGHBORHOOD or _r > 180-HL_NEIGHBORHOOD: continue
+                    if _c < HL_NEIGHBORHOOD or _c > 180-HL_NEIGHBORHOOD: continue
+                    _ua_hl.append(dict(type=_typ,
+                                       lat=float(_ltv_u[_r]),
+                                       lon=float(_lv_u[_c]),
+                                       val=float(_hght_grid[_r,_c])))
+            _ua_hl_all[_plvl] = _ua_hl
+
+        def _seg_to_dict(seg):
+            mid = seg[len(seg)//2]
+            return {'coords': [[float(p[1]),float(p[0])] for p in seg],
+                    'label_lon': float(mid[1]), 'label_lat': float(mid[0])}
+
+        _hr_int = int(_hr)
+        _rt     = rt_segs.get(_hr_int, {})
+        _ts_ua[str(_hr_int)] = {
+            'levels':             _hr_data,
+            'instab':             _instab_cts,
+            'thermal_ridge_850':  [_seg_to_dict(s) for s in _rt.get(850, ([], []))[0]],
+            'thermal_trough_850': [_seg_to_dict(s) for s in _rt.get(850, ([], []))[1]],
+            'thermal_ridge_700':  [_seg_to_dict(s) for s in _rt.get(700, ([], []))[0]],
+            'thermal_trough_700': [_seg_to_dict(s) for s in _rt.get(700, ([], []))[1]],
+            'thermal_ridge_500':  [_seg_to_dict(s) for s in _rt.get(500, ([], []))[0]],
+            'thermal_trough_500': [_seg_to_dict(s) for s in _rt.get(500, ([], []))[1]],
+            'dtdx_zero_pts':      [],
+            **{f'hl_{pl}': _ua_hl_all.get(pl, []) for pl in UA_HL_LEVELS},
+        }
+
+    # ── Block 06 — convergence ────────────────────────────────────────────
+    print('[6/6] Computing convergence zones...')
+    _conv_sfc_by_ts  = {}
+    _conv_850_by_hr  = {}
+    _sfc_trough_by_ts = {}
+
+    for _ts in _ts_all:
+        _recs = [d for d in metar_records if d['timestamp'] == _ts]
+        pts_u, pts_v = [], []
+        for d in _recs:
+            _wd = d.get('wind_dir'); _ws = d.get('wind_spd')
+            if _wd is None or _ws is None: continue
+            try: _wd, _ws = float(_wd), float(_ws)
+            except (TypeError, ValueError): continue
+            if not (0 <= _wd <= 360) or not (0 <= _ws <= 100): continue
+            _ws_ms = _ws * 0.514444 if _ws > 5 else _ws
+            _u, _v = _drct_sped_to_uv(_wd, _ws_ms)
+            pts_u.append((d['lat'], d['lon'], _u))
+            pts_v.append((d['lat'], d['lon'], _v))
+        u_g, v_g, lv, ltv = build_wind_grids(pts_u, pts_v)
+        if u_g is None:
+            _conv_sfc_by_ts[_ts] = []
+        else:
+            div_g = compute_divergence_grid(u_g, v_g, lv, ltv)
+            _conv_sfc_by_ts[_ts] = extract_convergence_contours(div_g, lv, ltv)
+
+        # SFC trough from SLP
+        _slp_g, _slp_lv, _slp_ltv = None, None, None
+        _pts_t = [(d['lat'], d['lon'], d['slp']) for d in _recs if d.get('slp') is not None]
+        if len(_pts_t) >= 8:
+            _seen_t = {}
+            for _la, _lo, _v in _pts_t:
+                _seen_t.setdefault((round(_la,2),round(_lo,2)), []).append(_v)
+            _pts_t = [(_k[0],_k[1],float(np.mean(_vs))) for _k,_vs in _seen_t.items()]
+            _la_t  = np.array([p[0] for p in _pts_t])
+            _lo_t  = np.array([p[1] for p in _pts_t])
+            _va_t  = np.array([p[2] for p in _pts_t])
+            _lv_t  = np.linspace(_lo_t.min()-1.5, _lo_t.max()+1.5, 150)
+            _ltv_t = np.linspace(_la_t.min()-1.5, _la_t.max()+1.5, 150)
+            _GL_t, _GLA_t = np.meshgrid(_lv_t, _ltv_t)
+            try:
+                _rbf_t = RBFInterpolator(np.column_stack([_lo_t, _la_t]), _va_t,
+                                         kernel='thin_plate_spline',
+                                         smoothing=max(0.3*len(_pts_t), 1e-6))
+                _slp_g = gaussian_filter(
+                    _rbf_t(np.column_stack([_GL_t.ravel(),_GLA_t.ravel()])
+                           ).reshape(150,150), sigma=3.0)
+                _slp_lv, _slp_ltv = _lv_t, _ltv_t
+            except Exception:
+                pass
+        _trough_pts = []
+        if _slp_g is not None:
+            _Ts = gaussian_filter(_slp_g, sigma=2.0)
+            for _j, _lat in enumerate(_slp_ltv):
+                _tr, _tpr = find_peaks(-_Ts[_j,:], prominence=0.3, width=2)
+                if len(_tr):
+                    _top = np.argsort(_tpr['prominences'])[-4:]
+                    for _idx in _tr[_top]:
+                        _prom = _tpr['prominences'][np.where(_tr==_idx)[0][0]]
+                        _trough_pts.append((_lat, _slp_lv[_idx], float(_prom)))
+        _segs_t = _pts_to_segs(_trough_pts, max_dist=4.0, min_pts=4)
+        _sfc_trough_by_ts[_ts] = []
+        for _seg in _segs_t:
+            _mid = _seg[len(_seg)//2]
+            _sfc_trough_by_ts[_ts].append({
+                'coords': [[p[1],p[0]] for p in _seg],
+                'label_lat': _mid[0], 'label_lon': _mid[1]})
+
+    for _hr in sorted(ua_summary_df['hour'].unique()):
+        _df = ua_summary_df[ua_summary_df['hour'] == _hr].copy()
+        pts_u, pts_v = [], []
+        for _, row in _df.iterrows():
+            _wd = row.get('DRCT_850'); _ws = row.get('SPED_850')
+            if _wd is None or _ws is None: continue
+            if isinstance(_wd, float) and np.isnan(_wd): continue
+            if isinstance(_ws, float) and np.isnan(_ws): continue
+            _u, _v = _drct_sped_to_uv(float(_wd), float(_ws))
+            pts_u.append((float(row['lat']), float(row['lon']), _u))
+            pts_v.append((float(row['lat']), float(row['lon']), _v))
+        u_g, v_g, lv, ltv = build_wind_grids(pts_u, pts_v)
+        if u_g is None:
+            _conv_850_by_hr[str(int(_hr))] = []
+        else:
+            div_g = compute_divergence_grid(u_g, v_g, lv, ltv)
+            _conv_850_by_hr[str(int(_hr))] = extract_convergence_contours(div_g, lv, ltv)
+
+    # ── Build per-timestamp station data (for syn_ts_data.json) ──────────
+    _ts_data = {}
+    for _ts in _ts_all:
+        _entries = []
+        for d in metar_records:
+            if d['timestamp'] != _ts: continue
+            _fc = {'VFR':'green','MVFR':'steelblue','IFR':'crimson','LIFR':'red'}.get(d['flt_cat'],'#888')
+            _wg = f' G{d["wind_gust"]}' if d.get('wind_gust') else ''
+            _pop = (f'<b>{d["icao"]}</b> {d["flt_cat"]}<br>'
+                    f'Temp/Dew: {d["temp"]}C / {d["dew"]}C<br>'
+                    f'Wind: {d["wind_dir"]}/{d["wind_spd"]}kt{_wg}<br>'
+                    f'SLP: {d["slp"]} hPa')
+            _entries.append({
+                'lat': d['lat'], 'lon': d['lon'],
+                'popup': _pop,
+                'tip': f'{d["icao"]} {d["temp"]}C/{d["dew"]}C {d["wind_dir"]}/{d["wind_spd"]}kt',
+                'svg': '', 'svg_w': 60, 'svg_h': 60
+            })
+        _ts_data[_ts] = _entries
+
+    # ── Write JSON files ──────────────────────────────────────────────────
+    files = {
+        'syn_ts_data.json':  _ts_data,
+        'syn_slp.json':      _ts_slp,
+        'syn_ua.json':       _ts_ua,
+        'syn_ua_stns.json':  {},           # station SVGs need notebook render — leave empty
+        'conv_data.json':    {
+            'sfc':        _conv_sfc_by_ts,
+            '850':        _conv_850_by_hr,
+            'sfc_trough': _sfc_trough_by_ts,
+            'threshold':  CONV_THRESHOLD,
+        },
+    }
+    for fname, data in files.items():
+        with open(fname, 'w') as f:
+            json.dump(data, f)
+        print(f'  ✓ {fname} ({os.path.getsize(fname)//1024} KB)')
+
+    print('\n✅ Update complete.')
+
+
+if __name__ == '__main__':
+    import os
+    main()
