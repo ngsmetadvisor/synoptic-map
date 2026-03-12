@@ -17,6 +17,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Debug - list files
+        run: |
+          echo "Working directory: $(pwd)"
+          ls -la
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
