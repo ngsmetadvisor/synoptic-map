@@ -1,9 +1,4 @@
-- name: Show action versions
-        run: |
-          echo "checkout and setup-python versions are baked into the runner"
-          cat $GITHUB_WORKSPACE/../_actions/actions/checkout/*/action.yml | grep -m1 "using:"
-          
-          name: Update Synoptic Map Data
+name: Update Synoptic Map Data
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -31,15 +26,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('.github/workflows/requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r .github/workflows/requirements.txt
 
       - name: Run data pipeline
-        run: python update_data.py --outdir .
+        run: python .github/workflows/update_data.py --outdir .
 
       - name: Commit and push updated JSON files
         run: |
