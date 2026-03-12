@@ -1,48 +1,43 @@
-name: Update Data
+name: Update Synoptic Map Data
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: '45 0 * * *'   # 00:45 UTC
-    - cron: '45 12 * * *'  # 12:45 UTC
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # ⚡ Force Node.js 24 for all actions
+    - cron: '0 13 * * *'  # 1300Z daily
+    - cron: '0 1  * * *'  # 0100Z daily
+  workflow_dispatch:       # Manual trigger
 
 jobs:
-  update:
+  update-data:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout repo
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      # Step 2: Set up Python
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # Step 3: Install dependencies
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      # Step 4: Run update script
-      - name: Run update_data.py
-        run: python update_data.py
-
-      # Step 5: Upload outputs
-      - name: Upload output files
-        uses: actions/upload-artifact@v4
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
         with:
-          name: data-outputs
-          path: |
-            syn_ts_data.json
-            syn_slp.json
-            syn_ua.json
-            syn_ua_stns.json
-            vort_images.json
-            conv_data.json
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run data pipeline
+        run: python update_data.py --outdir .
+
+      - name: Commit and push updated JSON files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add syn_ts_data.json syn_slp.json syn_ua.json syn_ua_stns.json \
+                  vort_images.json conv_data.json
+          git diff --cached --quiet || git commit -m "chore: update synoptic map data [$(date -u '+%Y-%m-%d %H:%MZ')]"
+          git push
