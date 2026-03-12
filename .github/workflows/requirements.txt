@@ -1,0 +1,8 @@
+requests
+numpy
+pandas
+folium
+matplotlib
+metpy
+scipy
+pillow
