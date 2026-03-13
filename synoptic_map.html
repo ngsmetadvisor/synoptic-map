@@ -17,7 +17,7 @@
             <meta name="viewport" content="width=device-width,
                 initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
             <style>
-                #map_6ce8a7c574bfd3f8bdc521ee053ac639 {
+                #map_a1a863a2ef6ce4b92cc09fe65fbfc18a {
                     position: relative;
                     width: 100.0%;
                     height: 100.0%;
@@ -116,7 +116,7 @@ var KEY_HGT_M   = {"850":0,"700":0,"500":5400,"250":0};
 var _SYN_TS_DATA = {};
 _SYN_PENDING++;
 fetch('https://ngsmetadvisor.github.io/synoptic-map/syn_ts_data.json').then(function(r){return r.json();}).then(function(d){_SYN_TS_DATA=d;_SYN_PENDING--;if(_SYN_PENDING===0 && typeof synInitDropdown==='function')synInitDropdown();}).catch(function(e){console.error('_SYN_TS_DATA load failed',e);_SYN_PENDING--;});
-var _SYN_TS_LIST = ["130300Z", "130400Z", "130500Z", "130600Z", "130700Z", "130800Z", "130900Z", "131000Z", "131100Z", "131200Z", "131300Z", "131400Z"];
+var _SYN_TS_LIST = ["130500Z", "130600Z", "130700Z", "130800Z", "130900Z", "131000Z", "131100Z", "131200Z", "131300Z", "131400Z", "131500Z", "131600Z"];
 var _SYN_SLP = {};
 _SYN_PENDING++;
 fetch('https://ngsmetadvisor.github.io/synoptic-map/syn_slp.json?t=' + Date.now())
@@ -185,6 +185,10 @@ function synUpdateTS(ts) {
     }).bindPopup(d.popup,{maxWidth:280,closeButton:true}).bindTooltip(d.tip).addTo(_synSfcModelLayer);
   });
   if (_synShowSfcModel) _synSfcModelLayer.addTo(MAP);
+  setTimeout(function(){
+    var _disp = _synShowTtd ? "" : "none";
+    document.querySelectorAll(".moist-ring").forEach(function(el){ el.style.display=_disp; });
+  }, 80);
   var slpData = _SYN_SLP[ts] || {contours:[], hl:[]};
   _synSlpLayer = L.layerGroup();
   slpData.contours.forEach(function(ct) {
@@ -396,8 +400,15 @@ function synToggleLayer(which) {
   } else if (which === "ttd") {
     _synShowTtd = !_synShowTtd;
     _synShowSfcTtd = _synShowTtd;
-    if (_synShowTtd) { if (_synTtdLayer) _synTtdLayer.addTo(MAP); _synBtnOn("btn-ttd"); _synBtnOn("btn-sfc-ttd"); }
-    else { if (_synTtdLayer) MAP.removeLayer(_synTtdLayer); _synBtnOff("btn-ttd"); _synBtnOff("btn-sfc-ttd"); }
+    if (_synShowTtd) {
+      if (_synTtdLayer) _synTtdLayer.addTo(MAP);
+      _synBtnOn("btn-ttd"); _synBtnOn("btn-sfc-ttd");
+      document.querySelectorAll(".moist-ring").forEach(function(el){ el.style.display=""; });
+    } else {
+      if (_synTtdLayer) MAP.removeLayer(_synTtdLayer);
+      _synBtnOff("btn-ttd"); _synBtnOff("btn-sfc-ttd");
+      document.querySelectorAll(".moist-ring").forEach(function(el){ el.style.display="none"; });
+    }
   } else if (which === "tmp") {
     _synShowTmp = !_synShowTmp;
     if (_synShowTmp) { if (_synTmpLayer) _synTmpLayer.addTo(MAP); _synBtnOn("btn-tmp"); }
@@ -475,8 +486,15 @@ function synSfcMaster(val) {
   if (on) { if (_synTmpLayer) _synTmpLayer.addTo(MAP); _synBtnOn("btn-tmp"); }
   else    { if (_synTmpLayer) MAP.removeLayer(_synTmpLayer); _synBtnOff("btn-tmp"); }
   _synShowSfcTtd = on; _synShowTtd = on;
-  if (on) { if (_synTtdLayer) _synTtdLayer.addTo(MAP); _synBtnOn("btn-sfc-ttd"); _synBtnOn("btn-ttd"); }
-  else    { if (_synTtdLayer) MAP.removeLayer(_synTtdLayer); _synBtnOff("btn-sfc-ttd"); _synBtnOff("btn-ttd"); }
+  if (on) {
+    if (_synTtdLayer) _synTtdLayer.addTo(MAP);
+    _synBtnOn("btn-sfc-ttd"); _synBtnOn("btn-ttd");
+    document.querySelectorAll(".moist-ring").forEach(function(el){ el.style.display=""; });
+  } else {
+    if (_synTtdLayer) MAP.removeLayer(_synTtdLayer);
+    _synBtnOff("btn-sfc-ttd"); _synBtnOff("btn-ttd");
+    document.querySelectorAll(".moist-ring").forEach(function(el){ el.style.display="none"; });
+  }
 }
 function synToggle850Moist() {
   _synShow850Moist = !_synShow850Moist;
@@ -1038,6 +1056,7 @@ function synInitDropdown() {
       var b = document.getElementById("btn-mode-"+m);
       if (b) b.style.background = (m === "850") ? "#4a7fc1" : "#b0b8c8";
     });
+    document.querySelectorAll(".moist-ring").forEach(function(el){ el.style.display="none"; });
     _synShowUAStns = true; _synBtnOn("btn-ua-stns");
     synUpdateTS(latest);
   }
@@ -1079,7 +1098,7 @@ else { window.addEventListener("load",function(){setTimeout(synInitDropdown,500)
 })();
 </script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-<div id="syn-save-bar" style="position:fixed;bottom:26px;right:10px;z-index:10000;background:rgba(255,255,255,0.96);border:1px solid #ccc;border-radius:8px;padding:6px 12px;font-family:Courier New,monospace;font-size:12px;box-shadow:0 2px 10px rgba(0,0,0,0.15);display:flex;align-items:center;gap:8px;"><button id="btn-save-png" onclick="synSavePNG()" style="font-size:11px;padding:4px 12px;cursor:pointer;border:1px solid #aaa;border-radius:4px;background:#4a7fc1;color:#fff;font-family:Courier New,monospace;">Save PNG</button><button id="btn-save-html" onclick="synSaveHTML()" style="font-size:11px;padding:4px 12px;cursor:pointer;border:1px solid #aaa;border-radius:4px;background:#4a7fc1;color:#fff;font-family:Courier New,monospace;">Save HTML</button><span id="save-status" style="color:#888;font-size:10px;"></span></div><script>
+<div id="syn-save-bar" style="position:fixed;bottom:26px;right:10px;z-index:10000;background:rgba(255,255,255,0.96);border:1px solid #ccc;border-radius:8px;padding:6px 12px;font-family:Courier New,monospace;font-size:12px;box-shadow:0 2px 10px rgba(0,0,0,0.15);display:flex;align-items:center;gap:8px;"><button id="btn-save-png" onclick="synSavePNG()" style="font-size:11px;padding:4px 12px;cursor:pointer;border:1px solid #aaa;border-radius:4px;background:#4a7fc1;color:#fff;font-family:Courier New,monospace;">Save PNG</button><button id="btn-save-500mb" onclick="synSave500mb()" style="font-size:11px;padding:4px 12px;cursor:pointer;border:1px solid #aaa;border-radius:4px;background:#4a7fc1;color:#fff;font-family:Courier New,monospace;">Save 500mb</button><span id="save-status" style="color:#888;font-size:10px;"></span></div><script>
 function synSavePNG() {
   var btn    = document.getElementById("btn-save-png");
   var status = document.getElementById("save-status");
@@ -1231,25 +1250,150 @@ function synSavePNG() {
     });
   }, 600);
 }
-function synSaveHTML() {
-  var statusEl = document.getElementById("save-status");
-  if (statusEl) statusEl.textContent = "Saving HTML...";
-  try {
-    var html = "<!DOCTYPE html>\n" + document.documentElement.outerHTML;
-    var blob = new Blob([html], {type: "text/html;charset=utf-8"});
-    var link = document.createElement("a");
-    var now = new Date();
-    var ts = now.getFullYear()+""+String(now.getMonth()+1).padStart(2,"0")+String(now.getDate()).padStart(2,"0")
-           +"_"+String(now.getHours()).padStart(2,"0")+String(now.getMinutes()).padStart(2,"0");
-    link.download = "synoptic_" + ts + ".html";
-    link.href = URL.createObjectURL(blob);
-    link.click();
-    setTimeout(function(){ URL.revokeObjectURL(link.href); }, 10000);
-    if (statusEl) statusEl.textContent = "HTML saved!";
-    setTimeout(function(){ if(statusEl) statusEl.textContent=""; }, 3000);
-  } catch(err) {
-    if (statusEl) statusEl.textContent = "HTML failed: "+err.message;
+function synSave500mb() {
+  var btn    = document.getElementById("btn-save-500mb");
+  var status = document.getElementById("save-status");
+  btn.disabled = true;
+  btn.textContent = "Capturing...";
+  status.textContent = "";
+  var keys = Object.keys(window).filter(function(k){ return k.startsWith("map_"); });
+  if (!keys.length) { status.textContent="Map not found"; btn.disabled=false; return; }
+  var MAP   = window[keys[0]];
+  var mapEl = document.getElementById(keys[0]) || document.querySelector(".leaflet-container");
+  if (!mapEl) { status.textContent="Map el not found"; btn.disabled=false; return; }
+  synSetMode("500");
+  var hideEls = [
+    mapEl.querySelector(".leaflet-control-container"),
+    document.querySelector(".leaflet-control-layers"),
+    document.querySelector(".leaflet-control-zoom"),
+    document.querySelector(".leaflet-control-attribution"),
+    document.getElementById("syn-ts-bar"),
+    document.getElementById("syn-save-bar"),
+    document.getElementById("syn-mode-bar"),
+    document.getElementById("syn-fs-btn"),
+    document.getElementById("syn-ts-display")
+  ].filter(Boolean);
+  var prevVis = hideEls.map(function(el){ return el.style.visibility; });
+  hideEls.forEach(function(el){ el.style.visibility = "hidden"; });
+  var CENTER   = [55, -118];
+  var ZOOM     = 5;
+  var TARGET_W = 1400;
+  var TARGET_H = 1141;
+  var origW = mapEl.style.width;
+  var origH = mapEl.style.height;
+  function restore() {
+    mapEl.style.width  = origW;
+    mapEl.style.height = origH;
+    MAP.invalidateSize();
+    btn.disabled = false;
+    btn.textContent = "Save 500mb";
+    hideEls.forEach(function(el,i){ el.style.visibility = prevVis[i]; });
   }
+  mapEl.style.width  = TARGET_W + "px";
+  mapEl.style.height = TARGET_H + "px";
+  MAP.invalidateSize();
+  MAP.setView(CENTER, ZOOM, { animate: false });
+
+  setTimeout(function() {
+    html2canvas(mapEl, {
+      useCORS: true, allowTaint: true,
+      scale: 2, logging: false,
+      width: TARGET_W, height: TARGET_H
+    }).then(function(canvas) {
+      var cropH = canvas.height;
+      var cropW = Math.min(Math.round(cropH * 2944.0 / 2400.0), canvas.width);
+      var out = document.createElement("canvas");
+      out.width  = cropW;
+      out.height = cropH;
+      var ctx2 = out.getContext("2d");
+      ctx2.drawImage(canvas, 0, 0, cropW, cropH, 0, 0, cropW, cropH);
+      var MARGIN = 36;
+      ctx2.fillStyle = "rgba(255,255,255,1.0)";
+      ctx2.fillRect(0,              0,              cropW,  MARGIN);
+      ctx2.fillRect(0,              cropH - MARGIN, cropW,  MARGIN);
+      ctx2.fillRect(0,              0,              MARGIN, cropH);
+      ctx2.fillRect(cropW - MARGIN, 0,              MARGIN, cropH);
+      var today  = new Date();
+      var months = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+      var dows   = ["SUNDAY","MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY"];
+      var dowStr  = dows[today.getUTCDay()];
+      var dateStr = months[today.getUTCMonth()] + " " + String(today.getUTCDate()).padStart(2,"0") + " " + today.getUTCFullYear();
+      var selEl   = document.getElementById("ts-select");
+      var tsVal   = selEl ? selEl.value : "";
+      var timeStr = tsVal ? tsVal.slice(2) : "1200Z";
+      var lines   = ["500MB ANALYSIS MAP", dowStr + " " + dateStr, timeStr];
+      var fSize   = 36;
+      var pad     = 24;
+      var lineH   = fSize * 1.3;
+      var boxH    = lines.length * lineH + pad * 2;
+      ctx2.font   = fSize + "px Arial, sans-serif";
+      var maxW    = Math.max.apply(null, lines.map(function(l){ return ctx2.measureText(l).width; }));
+      var boxW    = maxW + pad * 2;
+      var bx      = MARGIN;
+      var by      = cropH - MARGIN - boxH;
+      ctx2.fillStyle = "rgba(255,255,255,0.88)";
+      ctx2.fillRect(bx, by, boxW, boxH);
+      ctx2.strokeStyle = "#1a4a8a";
+      ctx2.lineWidth = 3;
+      ctx2.strokeRect(bx, by, boxW, boxH);
+      ctx2.fillStyle    = "#1a2030";
+      ctx2.textBaseline = "top";
+      ctx2.textAlign    = "center";
+      var centerX = bx + boxW / 2;
+      lines.forEach(function(line, i) {
+        ctx2.font = fSize + "px Arial, sans-serif";
+        ctx2.fillText(line, centerX, by + pad + i * lineH);
+      });
+      ctx2.strokeStyle = "#1a2030";
+      ctx2.lineWidth   = 2;
+      ctx2.strokeRect(MARGIN, MARGIN, cropW - MARGIN * 2, cropH - MARGIN * 2);
+      var MAP2 = window[Object.keys(window).filter(function(k){return k.startsWith("map_");})[0]];
+      if (MAP2) {
+        var _corners = [
+          { px: MARGIN+4,        py: MARGIN+4,        ax:"left",   ay:"top",    pt: MAP2.containerPointToLatLng([0,0]) },
+          { px: cropW-MARGIN-4,  py: MARGIN+4,        ax:"right",  ay:"top",    pt: MAP2.containerPointToLatLng([TARGET_W,0]) },
+          { px: MARGIN+4,        py: cropH-MARGIN-4,  ax:"left",   ay:"bottom", pt: MAP2.containerPointToLatLng([0,TARGET_H]) },
+          { px: cropW-MARGIN-4,  py: cropH-MARGIN-4,  ax:"right",  ay:"bottom", pt: MAP2.containerPointToLatLng([TARGET_W,TARGET_H]) },
+        ];
+        ctx2.font = "20px Courier New, monospace";
+        ctx2.fillStyle = "#1a2030";
+        ctx2.textBaseline = "top";
+        _corners.forEach(function(c) {
+          var lat = c.pt.lat.toFixed(1);
+          var lon = c.pt.lng.toFixed(1);
+          var line1 = (lat >= 0 ? lat+"°N" : Math.abs(lat)+"°S");
+          var line2 = (lon >= 0 ? lon+"°E" : Math.abs(lon)+"°W");
+          ctx2.textAlign    = c.ax;
+          ctx2.textBaseline = c.ay === "top" ? "bottom" : "top";
+          var lineH2 = 22;
+          var outerY = c.ay === "top" ? MARGIN - 4 : cropH - MARGIN + 4;
+          ctx2.fillText(line1, c.px, c.ay === "top" ? outerY - lineH2 : outerY);
+          ctx2.fillText(line2, c.px, c.ay === "top" ? outerY          : outerY + lineH2);
+        });
+      }
+      var dows2  = ["SUNDAY","MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY","SATURDAY"];
+      var months2= ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+      var now2   = new Date();
+      var dowStr2  = dows2[now2.getUTCDay()];
+      var monStr2  = months2[now2.getUTCMonth()];
+      var dayStr2  = String(now2.getUTCDate()).padStart(2,"0");
+      var yrStr2   = now2.getUTCFullYear();
+      var selEl2   = document.getElementById("ts-select");
+      var tsVal2   = selEl2 ? selEl2.value : "";
+      var timeStr2 = tsVal2 ? tsVal2.slice(2) : "1200Z";
+      var name = ("500MB_ANALYSIS_MAP_" + dowStr2 + "_" + monStr2 + "_" + dayStr2 + "_" + yrStr2 + "_" + timeStr2 + ".png").replace(/[^a-zA-Z0-9_\.]/g, "_");
+      var link = document.createElement("a");
+      link.download = name;
+      link.href = out.toDataURL("image/png");
+      link.click();
+      restore();
+      status.textContent = "Saved!";
+      setTimeout(function(){ status.textContent = ""; }, 3000);
+    }).catch(function(e) {
+      restore();
+      status.textContent = "Failed: " + e.message;
+    });
+  }, 600);
 }
 </script>
     <style>
@@ -1628,14 +1772,14 @@ function synToggleConv850() {
 })();
 </script>
     
-            <div class="folium-map" id="map_6ce8a7c574bfd3f8bdc521ee053ac639" ></div>
+            <div class="folium-map" id="map_a1a863a2ef6ce4b92cc09fe65fbfc18a" ></div>
         
 </body>
 <script>
     
     
-            var map_6ce8a7c574bfd3f8bdc521ee053ac639 = L.map(
-                "map_6ce8a7c574bfd3f8bdc521ee053ac639",
+            var map_a1a863a2ef6ce4b92cc09fe65fbfc18a = L.map(
+                "map_a1a863a2ef6ce4b92cc09fe65fbfc18a",
                 {
                     center: [53.3097, -113.5797],
                     crs: L.CRS.EPSG3857,
@@ -1652,7 +1796,7 @@ function synToggleConv850() {
 
         
     
-            var tile_layer_483e95e9a2359129fa3ae30a83ff5e9f = L.tileLayer(
+            var tile_layer_b7c3d76b6613210405ffba1f285cd069 = L.tileLayer(
                 "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
                 {
   "minZoom": 0,
@@ -1669,10 +1813,10 @@ function synToggleConv850() {
             );
         
     
-            tile_layer_483e95e9a2359129fa3ae30a83ff5e9f.addTo(map_6ce8a7c574bfd3f8bdc521ee053ac639);
+            tile_layer_b7c3d76b6613210405ffba1f285cd069.addTo(map_a1a863a2ef6ce4b92cc09fe65fbfc18a);
         
     
-            var tile_layer_0abd8aaabe9fa7c633246973207d5ce3 = L.tileLayer(
+            var tile_layer_c76ff4093bbf4c09ebb047fa3d22cfd1 = L.tileLayer(
                 "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
                 {
   "minZoom": 0,
@@ -1689,10 +1833,10 @@ function synToggleConv850() {
             );
         
     
-            tile_layer_0abd8aaabe9fa7c633246973207d5ce3.addTo(map_6ce8a7c574bfd3f8bdc521ee053ac639);
+            tile_layer_c76ff4093bbf4c09ebb047fa3d22cfd1.addTo(map_a1a863a2ef6ce4b92cc09fe65fbfc18a);
         
     
-            var tile_layer_39fec9134efea4711b45bf5beda359d5 = L.tileLayer(
+            var tile_layer_409f40ebb9cf72c0f77d290a39738106 = L.tileLayer(
                 "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
                 {
   "minZoom": 0,
@@ -1709,10 +1853,10 @@ function synToggleConv850() {
             );
         
     
-            tile_layer_39fec9134efea4711b45bf5beda359d5.addTo(map_6ce8a7c574bfd3f8bdc521ee053ac639);
+            tile_layer_409f40ebb9cf72c0f77d290a39738106.addTo(map_a1a863a2ef6ce4b92cc09fe65fbfc18a);
         
     
-            var tile_layer_358af39ce85d16c7b4790d4f8863de5b = L.tileLayer(
+            var tile_layer_5953540b5f72f9e2e0274ab4a55e14ef = L.tileLayer(
                 "about:blank",
                 {
   "minZoom": 0,
@@ -1729,28 +1873,28 @@ function synToggleConv850() {
             );
         
     
-            tile_layer_358af39ce85d16c7b4790d4f8863de5b.addTo(map_6ce8a7c574bfd3f8bdc521ee053ac639);
+            tile_layer_5953540b5f72f9e2e0274ab4a55e14ef.addTo(map_a1a863a2ef6ce4b92cc09fe65fbfc18a);
         
     
-            var layer_control_ba362cb22f926f70fc3f5e3e4a4cd678_layers = {
+            var layer_control_8498bb08d6f385739f29f2f71182aeba_layers = {
                 base_layers : {
-                    "White (CartoDB)" : tile_layer_483e95e9a2359129fa3ae30a83ff5e9f,
-                    "OpenStreetMap" : tile_layer_0abd8aaabe9fa7c633246973207d5ce3,
-                    "ESRI Topo" : tile_layer_39fec9134efea4711b45bf5beda359d5,
-                    "Blank (borders only)" : tile_layer_358af39ce85d16c7b4790d4f8863de5b,
+                    "White (CartoDB)" : tile_layer_b7c3d76b6613210405ffba1f285cd069,
+                    "OpenStreetMap" : tile_layer_c76ff4093bbf4c09ebb047fa3d22cfd1,
+                    "ESRI Topo" : tile_layer_409f40ebb9cf72c0f77d290a39738106,
+                    "Blank (borders only)" : tile_layer_5953540b5f72f9e2e0274ab4a55e14ef,
                 },
                 overlays :  {
                 },
             };
-            let layer_control_ba362cb22f926f70fc3f5e3e4a4cd678 = L.control.layers(
-                layer_control_ba362cb22f926f70fc3f5e3e4a4cd678_layers.base_layers,
-                layer_control_ba362cb22f926f70fc3f5e3e4a4cd678_layers.overlays,
+            let layer_control_8498bb08d6f385739f29f2f71182aeba = L.control.layers(
+                layer_control_8498bb08d6f385739f29f2f71182aeba_layers.base_layers,
+                layer_control_8498bb08d6f385739f29f2f71182aeba_layers.overlays,
                 {
   "position": "topright",
   "collapsed": false,
   "autoZIndex": true,
 }
-            ).addTo(map_6ce8a7c574bfd3f8bdc521ee053ac639);
+            ).addTo(map_a1a863a2ef6ce4b92cc09fe65fbfc18a);
 
         
 </script>
