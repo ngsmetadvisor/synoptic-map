@@ -17,7 +17,7 @@
             <meta name="viewport" content="width=device-width,
                 initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
             <style>
-                #map_a1a863a2ef6ce4b92cc09fe65fbfc18a {
+                #map_65767fa1379217b10ce1e6ad97562699 {
                     position: relative;
                     width: 100.0%;
                     height: 100.0%;
@@ -116,7 +116,7 @@ var KEY_HGT_M   = {"850":0,"700":0,"500":5400,"250":0};
 var _SYN_TS_DATA = {};
 _SYN_PENDING++;
 fetch('https://ngsmetadvisor.github.io/synoptic-map/syn_ts_data.json').then(function(r){return r.json();}).then(function(d){_SYN_TS_DATA=d;_SYN_PENDING--;if(_SYN_PENDING===0 && typeof synInitDropdown==='function')synInitDropdown();}).catch(function(e){console.error('_SYN_TS_DATA load failed',e);_SYN_PENDING--;});
-var _SYN_TS_LIST = ["130500Z", "130600Z", "130700Z", "130800Z", "130900Z", "131000Z", "131100Z", "131200Z", "131300Z", "131400Z", "131500Z", "131600Z"];
+var _SYN_TS_LIST = ["130600Z", "130700Z", "130800Z", "130900Z", "131000Z", "131100Z", "131200Z", "131300Z", "131400Z", "131500Z", "131600Z", "131700Z"];
 var _SYN_SLP = {};
 _SYN_PENDING++;
 fetch('https://ngsmetadvisor.github.io/synoptic-map/syn_slp.json?t=' + Date.now())
@@ -1772,14 +1772,14 @@ function synToggleConv850() {
 })();
 </script>
     
-            <div class="folium-map" id="map_a1a863a2ef6ce4b92cc09fe65fbfc18a" ></div>
+            <div class="folium-map" id="map_65767fa1379217b10ce1e6ad97562699" ></div>
         
 </body>
 <script>
     
     
-            var map_a1a863a2ef6ce4b92cc09fe65fbfc18a = L.map(
-                "map_a1a863a2ef6ce4b92cc09fe65fbfc18a",
+            var map_65767fa1379217b10ce1e6ad97562699 = L.map(
+                "map_65767fa1379217b10ce1e6ad97562699",
                 {
                     center: [53.3097, -113.5797],
                     crs: L.CRS.EPSG3857,
@@ -1796,7 +1796,7 @@ function synToggleConv850() {
 
         
     
-            var tile_layer_b7c3d76b6613210405ffba1f285cd069 = L.tileLayer(
+            var tile_layer_774354d36d46546ca11dd65936ba5b82 = L.tileLayer(
                 "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
                 {
   "minZoom": 0,
@@ -1813,10 +1813,10 @@ function synToggleConv850() {
             );
         
     
-            tile_layer_b7c3d76b6613210405ffba1f285cd069.addTo(map_a1a863a2ef6ce4b92cc09fe65fbfc18a);
+            tile_layer_774354d36d46546ca11dd65936ba5b82.addTo(map_65767fa1379217b10ce1e6ad97562699);
         
     
-            var tile_layer_c76ff4093bbf4c09ebb047fa3d22cfd1 = L.tileLayer(
+            var tile_layer_2e70aeb636989d1e1d49d6bc74d1b890 = L.tileLayer(
                 "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
                 {
   "minZoom": 0,
@@ -1833,10 +1833,10 @@ function synToggleConv850() {
             );
         
     
-            tile_layer_c76ff4093bbf4c09ebb047fa3d22cfd1.addTo(map_a1a863a2ef6ce4b92cc09fe65fbfc18a);
+            tile_layer_2e70aeb636989d1e1d49d6bc74d1b890.addTo(map_65767fa1379217b10ce1e6ad97562699);
         
     
-            var tile_layer_409f40ebb9cf72c0f77d290a39738106 = L.tileLayer(
+            var tile_layer_d2cd2758dd0023cad46e1b288d1c15c8 = L.tileLayer(
                 "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
                 {
   "minZoom": 0,
@@ -1853,10 +1853,10 @@ function synToggleConv850() {
             );
         
     
-            tile_layer_409f40ebb9cf72c0f77d290a39738106.addTo(map_a1a863a2ef6ce4b92cc09fe65fbfc18a);
+            tile_layer_d2cd2758dd0023cad46e1b288d1c15c8.addTo(map_65767fa1379217b10ce1e6ad97562699);
         
     
-            var tile_layer_5953540b5f72f9e2e0274ab4a55e14ef = L.tileLayer(
+            var tile_layer_ef6f3f18db4a2b4354ec20fccce8cd0d = L.tileLayer(
                 "about:blank",
                 {
   "minZoom": 0,
@@ -1873,28 +1873,28 @@ function synToggleConv850() {
             );
         
     
-            tile_layer_5953540b5f72f9e2e0274ab4a55e14ef.addTo(map_a1a863a2ef6ce4b92cc09fe65fbfc18a);
+            tile_layer_ef6f3f18db4a2b4354ec20fccce8cd0d.addTo(map_65767fa1379217b10ce1e6ad97562699);
         
     
-            var layer_control_8498bb08d6f385739f29f2f71182aeba_layers = {
+            var layer_control_33ba57806e718da8e7edbb4c150637bc_layers = {
                 base_layers : {
-                    "White (CartoDB)" : tile_layer_b7c3d76b6613210405ffba1f285cd069,
-                    "OpenStreetMap" : tile_layer_c76ff4093bbf4c09ebb047fa3d22cfd1,
-                    "ESRI Topo" : tile_layer_409f40ebb9cf72c0f77d290a39738106,
-                    "Blank (borders only)" : tile_layer_5953540b5f72f9e2e0274ab4a55e14ef,
+                    "White (CartoDB)" : tile_layer_774354d36d46546ca11dd65936ba5b82,
+                    "OpenStreetMap" : tile_layer_2e70aeb636989d1e1d49d6bc74d1b890,
+                    "ESRI Topo" : tile_layer_d2cd2758dd0023cad46e1b288d1c15c8,
+                    "Blank (borders only)" : tile_layer_ef6f3f18db4a2b4354ec20fccce8cd0d,
                 },
                 overlays :  {
                 },
             };
-            let layer_control_8498bb08d6f385739f29f2f71182aeba = L.control.layers(
-                layer_control_8498bb08d6f385739f29f2f71182aeba_layers.base_layers,
-                layer_control_8498bb08d6f385739f29f2f71182aeba_layers.overlays,
+            let layer_control_33ba57806e718da8e7edbb4c150637bc = L.control.layers(
+                layer_control_33ba57806e718da8e7edbb4c150637bc_layers.base_layers,
+                layer_control_33ba57806e718da8e7edbb4c150637bc_layers.overlays,
                 {
   "position": "topright",
   "collapsed": false,
   "autoZIndex": true,
 }
-            ).addTo(map_a1a863a2ef6ce4b92cc09fe65fbfc18a);
+            ).addTo(map_65767fa1379217b10ce1e6ad97562699);
 
         
 </script>
