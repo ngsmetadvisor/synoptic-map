@@ -119,7 +119,8 @@ fetch('https://ngsmetadvisor.github.io/synoptic-map/syn_ts_data.json').then(func
 var _SYN_TS_LIST = ["120900Z", "121000Z", "121100Z", "121200Z", "121300Z", "121400Z", "121500Z", "121600Z", "121700Z", "121800Z", "121900Z", "122000Z"];
 var _SYN_SLP = {};
 _SYN_PENDING++;
-fetch('https://ngsmetadvisor.github.io/synoptic-map/syn_slp.json').then(function(r){return r.json();}).then(function(d){_SYN_SLP=d;_SYN_PENDING--;if(_SYN_PENDING===0 && typeof synInitDropdown==='function')synInitDropdown();}).catch(function(e){console.error('_SYN_SLP load failed',e);_SYN_PENDING--;});
+fetch('https://ngsmetadvisor.github.io/synoptic-map/syn_slp.json?t=' + Date.now())
+.then(function(r){return r.json();}).then(function(d){_SYN_SLP=d;_SYN_PENDING--;if(_SYN_PENDING===0 && typeof synInitDropdown==='function')synInitDropdown();}).catch(function(e){console.error('_SYN_SLP load failed',e);_SYN_PENDING--;});
 var _SYN_UA = {};
 _SYN_PENDING++;
 fetch('https://ngsmetadvisor.github.io/synoptic-map/syn_ua.json').then(function(r){return r.json();}).then(function(d){_SYN_UA=d;_SYN_PENDING--;if(_SYN_PENDING===0 && typeof synInitDropdown==='function')synInitDropdown();}).catch(function(e){console.error('_SYN_UA load failed',e);_SYN_PENDING--;});
