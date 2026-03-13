@@ -1695,8 +1695,8 @@ def main():
     print('\n── Writing JSON files ────────────────────────────────')
     write_json(os.path.join(outdir, 'syn_ts_data.json'), ts_data)
     write_json(os.path.join(outdir, 'syn_slp.json'),     ts_slp)
-    write_json(os.path.join(outdir, 'syn_ua.json'),      ts_ua)
-    write_json(os.path.join(outdir, 'syn_ua_stns.json'), ua_stns)
+    ts_ua['_ua_dates'] = ua_date_map
+    write_json(os.path.join(outdir, 'syn_ua.json'),      ts_ua)    write_json(os.path.join(outdir, 'syn_ua_stns.json'), ua_stns)
     write_json(os.path.join(outdir, 'vort_images.json'), vort_images)
     write_json(os.path.join(outdir, 'conv_data.json'),   conv_data)
     # fire_zones_geojson.json is static — skip if already in repo
