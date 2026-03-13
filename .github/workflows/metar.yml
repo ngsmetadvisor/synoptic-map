@@ -41,4 +41,5 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add syn_ts_data.json syn_slp.json conv_data.json
           git diff --cached --quiet || git commit -m "chore: update METAR data [$(date -u '+%Y-%m-%d %H:%MZ')]"
+          git pull --rebase origin main
           git push
