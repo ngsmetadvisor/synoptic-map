@@ -1560,7 +1560,7 @@ def fetch_vorticity(ua_date_map):
         _img = _fetch_vort_b64(_t)
         if _img: _vort_images[_k] = _img
     print(f'  ✓ Vort images: {list(_vort_images.keys())}')
-    return _vort_images
+    return _vort_images, vort_time_map
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1684,7 +1684,7 @@ def main():
     conv_data = build_convergence_data(metar_records, ua_summary_df)
 
     # 7. Vorticity
-    vort_images = fetch_vorticity(ua_date_map)
+    vort_images, vort_time_map = fetch_vorticity(ua_date_map)
 
     # 8. Station SVG data
     print('── Building station SVG data ─────────────────────────')
@@ -1698,7 +1698,20 @@ def main():
     ts_ua['_ua_dates'] = ua_date_map
     write_json(os.path.join(outdir, 'syn_ua.json'),      ts_ua)    
     write_json(os.path.join(outdir, 'syn_ua_stns.json'), ua_stns)
-    write_json(os.path.join(outdir, 'vort_images.json'), vort_images)
+    vort_no_match = []
+    for k, ua_ds in ua_date_map.items():
+        vt = vort_time_map.get(k)
+        if vt:
+            ua_dt = datetime.strptime(str(ua_ds).strip(), '%Y-%m-%d %HZ').replace(tzinfo=timezone.utc)
+            vort_dt = datetime.fromisoformat(vt.replace('Z', '+00:00'))
+            diff_h = abs((vort_dt - ua_dt).total_seconds()) / 3600
+            if diff_h > 3:
+                vort_no_match.append(f'UA {k}Z: nearest vort is {diff_h:.0f}h away ({vt})')
+    write_json(os.path.join(outdir, 'vort_images.json'), {
+        'images': vort_images,
+        'time_map': vort_time_map,
+        'no_match': vort_no_match,
+    })
     write_json(os.path.join(outdir, 'conv_data.json'),   conv_data)
     # fire_zones_geojson.json is static — skip if already in repo
     fire_zones_path = os.path.join(outdir, 'fire_zones_geojson.json')
