@@ -1404,8 +1404,8 @@ fetch('https://ngsmetadvisor.github.io/synoptic-map/fire_zones_geojson.json?t=' 
 </script>
 <style>#btn-fire-zones { transition: background 0.2s; }</style>
     <script>
-var _VORT_TIME_MAP   = {"0": "2026-03-12T12:00:00Z", "12": "2026-03-12T12:00:00Z"};
-var _VORT_NO_MATCH   = ["UA 0Z: nearest vort is 12h away (2026-03-12T12:00:00Z)"];
+var _VORT_TIME_MAP   = {};
+var _VORT_NO_MATCH   = [];
 var _VORT_LAYER      = "RDPS_10km_AbsoluteVorticity_500mb";
 var _synVortLayer    = null;
 var _synShowVort     = false;
@@ -1445,7 +1445,7 @@ function synToggleVort() {
 }
 var _VORT_IMAGES = {};
 _SYN_PENDING++;
-fetch('https://ngsmetadvisor.github.io/synoptic-map/vort_images.json?t=' + Date.now()).then(function(r){return r.json();}).then(function(d){_VORT_IMAGES=d;_SYN_PENDING--;if(_SYN_PENDING===0 && typeof synInitDropdown==='function')synInitDropdown();}).catch(function(e){console.error('_VORT_IMAGES load failed',e);_SYN_PENDING--;});
+fetch('https://ngsmetadvisor.github.io/synoptic-map/vort_images.json?t=' + Date.now()).then(function(r){return r.json();}).then(function(d){_VORT_IMAGES=d.images||d;_VORT_TIME_MAP=d.time_map||{};_VORT_NO_MATCH=d.no_match||[];_SYN_PENDING--;if(_SYN_PENDING===0 && typeof synInitDropdown==='function')synInitDropdown();}).catch(function(e){console.error('_VORT_IMAGES load failed',e);_SYN_PENDING--;});
 function _synRenderVort(MAP) {
   if (_synVortLayer) { MAP.removeLayer(_synVortLayer); _synVortLayer = null; }
   var imgData = _VORT_IMAGES[_synUAHourKey] || _VORT_IMAGES["0"] || Object.values(_VORT_IMAGES)[0];
